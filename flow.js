@@ -7,7 +7,9 @@
   const playHandlers = Object.assign({}, G.handlers);
 
   let scene = 'title', sceneT = 0, reel = 1, titleCam = 0, lastCount = 0;
-  let best = 0, newBest = false;
+  let best = 0, newBest = false, nabbed = false;
+  // When the falling houses turn up, in seconds into each reel.
+  const FACADES = { 1: [24], 2: [12, 40] };
   try { best = +localStorage.getItem('trt-best') || 0; } catch (e) { /* storage unavailable */ }
   G.clock = null;
 
@@ -19,13 +21,13 @@
   function go(name) { scene = name; sceneT = 0; }
   function startRun() {
     play.reset();
-    G.clock = null; newBest = false; lastCount = 0;
+    G.clock = null; newBest = false; lastCount = 0; nabbed = false;
     G.audio.setTempo(100);
     go('leader');
   }
   function showCard(r) { reel = r; go('card'); }
   function beginReel() {
-    G.clock = { reel, left: REEL_SECONDS };
+    G.clock = { reel, left: REEL_SECONDS, facades: FACADES[reel].slice() };
     G.audio.setTempo(reel === 1 ? 100 : 118);
     G.audio.setClatter(true);
     go('play');
@@ -76,6 +78,9 @@
     } else if (scene === 'play') {
       play.update(dt);
       G.clock.left -= dt;
+      const c = G.clock;
+      if (c.facades.length && REEL_SECONDS - c.left >= c.facades[0]) { c.facades.shift(); G.world.wantFacade = true; }
+      if (G.chase.nabT() > 1.8) { nabbed = true; go('iris'); return; }
       // Let a trick in progress finish before the reel runs out.
       if (G.clock.left <= 0 && (play.settled() || G.clock.left < -3)) {
         play.bank();
@@ -198,8 +203,9 @@
     const w = W(), s = G.getScore();
     ctx.fillStyle = '#0b0a08'; ctx.fillRect(0, 0, w, H);
     decoCard(16, 16, w - 32, H - 32);
-    text('THE END', w / 2, 96, '54px ' + G.TITLE_FONT);
-    divider(w / 2, 118, 120);
+    text(nabbed ? 'NABBED!' : 'THE END', w / 2, 96, '54px ' + G.TITLE_FONT);
+    if (nabbed) text('Collared by the constabulary.', w / 2, 124, '14px ' + G.BODY_FONT, G.LIGHT);
+    else divider(w / 2, 118, 120);
     text('FINAL SCORE', w / 2, 150, '14px ' + G.BODY_FONT, G.LIGHT);
     text(G.fmt(s), w / 2, 190, G.NUM_FONT.replace('{s}', 38));
     if (newBest && s > 0) { if (blink(t)) text('A NEW RECORD!', w / 2, 218, '17px ' + G.BODY_FONT); }
@@ -220,7 +226,7 @@
       if (scene === 'play' && sceneT < 0.9) iris(hx, hy, Math.pow(sceneT / 0.9, 2) * W());
       if (scene === 'iris') {
         iris(hx, hy, Math.pow(Math.max(0, 1 - sceneT / 1.1), 2) * W());
-        if (sceneT > 1.1) text('THE END', W() / 2, H / 2 + 14, '40px ' + G.TITLE_FONT, G.PAPER);
+        if (sceneT > 1.1) text(nabbed ? 'NABBED!' : 'THE END', W() / 2, H / 2 + 14, '40px ' + G.TITLE_FONT, G.PAPER);
       }
     }
     if (scene === 'title' || scene === 'play') drawMute();

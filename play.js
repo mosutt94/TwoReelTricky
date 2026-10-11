@@ -37,6 +37,8 @@
     stats.bestCombo = 0; stats.bails = 0;
     G.world.list.length = 0;
     G.world.nextX = 760;
+    G.world.wantFacade = false;
+    if (G.chase) G.chase.reset();
   }
 
   // ---- Helpers
@@ -52,14 +54,14 @@
   function hitSide() {
     if (hero.ghost) return null;
     for (const o of G.world.list) {
-      if (o.kind === 'kicker' || o.kind === 'line') continue;
+      if (o.kind === 'kicker' || o.kind === 'line' || o.kind === 'facade') continue;
       if (overlapping(o, 7) && hero.y > o.top + 5) return o;
     }
     return null;
   }
   function grindTarget(prevY) {
     for (const o of G.world.list) {
-      if (o.kind === 'kicker') continue;
+      if (o.kind === 'kicker' || o.kind === 'facade') continue;
       if (hero.x >= o.x - 8 && hero.x <= o.x + o.w - 4 && prevY <= o.top + 3 && hero.y >= o.top) return o;
     }
     return null;
@@ -84,6 +86,7 @@
     const total = Math.round(combo.base) * combo.mult;
     score += total;
     stats.bestCombo = Math.max(stats.bestCombo, total);
+    if (G.chase) G.chase.onBank(total);
     G.sfx('bank');
     banner = { text: '+' + G.fmt(total), sub: combo.mult > 1 ? combo.mult + '-trick combo!' : combo.names[0], t: 0 };
     clearCombo();
@@ -145,6 +148,7 @@
     G.shake = 7;
     stats.bails++;
     G.sfx('bail');
+    if (G.chase) G.chase.onBail();
     if (o && o.kind === 'crate') G.emit('chip', hero.x + 12, o.top + 8, 9, 140);
     G.emit('dust', hero.x + 30, GR, 8, 80);
   }
@@ -218,9 +222,18 @@
     }
   }
 
+  function tickText(dt) {
+    for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t += dt) > 0.9) popups.splice(i, 1);
+    if (banner && (banner.t += dt) > 1.6) banner = null;
+  }
+
   function update(dt) {
     time += dt;
     const h = hero;
+    if (G.chase.nabT() >= 0) {        // collared: the world holds still for the dogpile
+      G.chase.update(dt); G.updateParticles(dt); tickText(dt);
+      return;
+    }
     const target = 250 + Math.min(time, 120) * 0.6;
     if (h.state !== 'bail') h.speed = Math.min(target, h.speed + 260 * dt);
     h.x += h.speed * dt;
@@ -272,9 +285,9 @@
     h.crouch = G.lerp(h.crouch, crouch, Math.min(1, dt * 14));
     h.arms = arms;
 
+    G.chase.update(dt);
     G.updateParticles(dt);
-    for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t += dt) > 0.9) popups.splice(i, 1);
-    if (banner && (banner.t += dt) > 1.6) banner = null;
+    tickText(dt);
   }
 
   // ---- Drawing
@@ -364,9 +377,11 @@
     G.drawBackground(camX);
     G.drawObstacles(camX, t);
     G.drawParticles(camX);
+    G.chase.draw(camX, heroSX, t);
     if (looseBoard.active) G.drawLooseBoard(looseBoard.x - camX, looseBoard.y, looseBoard.rot);
     G.drawHero(hero, heroSX, t);
     if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
+    G.chase.drawOver(camX, heroSX, t);
     G.drawForeground(camX);
     if (withHUD) drawHUD(heroSX);
     return heroSX;
@@ -375,6 +390,18 @@
   // Safe to end a reel: not mid-air, mid-grind or mid-fall.
   function settled() { return hero.state === 'ground'; }
 
-  G.play = { reset, update, draw, settled, bank: bankCombo };
+  // Banner cards for the set pieces. say() won't talk over another card unless forced.
+  function say(text, sub, force, isBail) {
+    if (banner && !force) return false;
+    banner = { text, sub, t: 0, bail: !!isBail };
+    return true;
+  }
+  function award(pts, text, sub) {
+    score += pts;
+    G.sfx('bank');
+    say(text, sub, true);
+  }
+
+  G.play = { reset, update, draw, settled, bank: bankCombo, say, award, bail };
   reset();
 })();

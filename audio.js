@@ -138,6 +138,31 @@
       noise(t + 0.3, 0.25, 0.9, 'lowpass', 300, 1);
     } else if (name === 'bank') {
       [72, 76, 79, 84].forEach((m, i) => piano(m, t + i * 0.06, 0.5, 0.12));
+    } else if (name === 'whistle') {          // police whistle: a shrill warbling trill
+      const o = ac.createOscillator(), lfo = ac.createOscillator(), depth = ac.createGain(), g = ac.createGain();
+      o.type = 'square'; o.frequency.value = 2600;
+      lfo.frequency.value = 28; depth.gain.value = 180;
+      lfo.connect(depth); depth.connect(o.frequency);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.06, t + 0.02);
+      g.gain.setValueAtTime(0.06, t + 0.5);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+      o.connect(g); g.connect(sfxBus);
+      o.start(t); lfo.start(t); o.stop(t + 0.75); lfo.stop(t + 0.75);
+    } else if (name === 'creak') {            // timber groaning before the house goes over
+      const o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(90, t); o.frequency.linearRampToValueAtTime(55, t + 0.9);
+      f.type = 'lowpass'; f.frequency.value = 600;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.1);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 1.0);
+      o.connect(f); f.connect(g); g.connect(sfxBus);
+      o.start(t); o.stop(t + 1.05);
+    } else if (name === 'crash') {
+      noise(t, 0.9, 1.0, 'lowpass', 250, 1);
+      noise(t + 0.02, 0.5, 0.5, 'bandpass', 1200, 0.8);
+      for (let k = 1; k < 6; k++) noise(t + k * 0.07, 0.08, 0.4, 'bandpass', 2000 + k * 300, 3);
     } else if (name === 'tick') {
       noise(t, 0.03, 0.4, 'bandpass', 3000, 4);
     }

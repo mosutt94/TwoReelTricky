@@ -141,7 +141,10 @@
   ];
   G.updateWorld = function (camX) {
     while (world.nextX < camX + G.viewW + 400) {
-      const end = PATTERNS[(Math.random() * PATTERNS.length) | 0](world.nextX);
+      // A falling house gets the street to itself, with room to stand still in front of it.
+      const end = world.wantFacade
+        ? (world.wantFacade = false, add('facade', world.nextX + 260, 170, 200) + 380)
+        : PATTERNS[(Math.random() * PATTERNS.length) | 0](world.nextX);
       world.nextX = end + (G.clock && G.clock.reel === 2 ? G.rand(220, 380) : G.rand(280, 480));
     }
     while (world.list.length && world.list[0].x + world.list[0].w < camX - 300) world.list.shift();
