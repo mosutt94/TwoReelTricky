@@ -22,13 +22,13 @@
   function startRun() {
     play.reset();
     G.clock = null; newBest = false; lastCount = 0; nabbed = false;
-    G.audio.setTempo(100);
+    G.audio.setTempo(150);
     go('leader');
   }
   function showCard(r) { reel = r; go('card'); }
   function beginReel() {
     G.clock = { reel, left: REEL_SECONDS, facades: FACADES[reel].slice() };
-    G.audio.setTempo(reel === 1 ? 100 : 112);
+    G.audio.setTempo(reel === 1 ? 150 : 166);
     G.audio.setClatter(true);
     go('play');
   }
@@ -39,7 +39,7 @@
       try { localStorage.setItem('trt-best', String(best)); } catch (e) { /* ignore */ }
     }
     G.audio.setClatter(false);
-    G.audio.setTempo(92);
+    G.audio.setTempo(138);
     go('end');
   }
 

@@ -1,44 +1,44 @@
-// Sound: a gentle ragtime loop on a warm synthesized piano with a little theatre-room echo,
-// soft projector clatter, and slapstick sound effects. All generated with Web Audio.
+// Sound: Scott Joplin's "The Entertainer" (1902, public domain) on a warm synthesized piano
+// with a little picture-house echo, soft projector clatter, and slapstick sound effects.
+// Everything is generated with Web Audio from the note data below; nothing is downloaded.
 (function () {
   let ac = null, master = null, musicBus = null, sfxBus = null, noiseBuf = null;
   let muted = false;
   try { muted = localStorage.getItem('trt-muted') === '1'; } catch (e) { /* storage unavailable */ }
 
-  // C major stride piano. Each bar: two half-bar chords and an 8-step melody (MIDI note, 0 = rest, -1 = hold).
+  // Stride left hand: bass note on each beat, chord on each off-beat.
   const CH = {
     C: { root: 48, alt: 43, tones: [52, 55, 60] },
     G7: { root: 43, alt: 50, tones: [53, 59, 62] },
-    F: { root: 41, alt: 48, tones: [57, 60, 65] },
-    A7: { root: 45, alt: 52, tones: [55, 61, 64] },
     D7: { root: 50, alt: 45, tones: [54, 60, 62] },
-    C7: { root: 48, alt: 43, tones: [52, 55, 58] },
-    Bb: { root: 46, alt: 41, tones: [53, 58, 62] },
   };
+  // Each bar of 2/4 is eight sixteenth-note steps: [[first-half chord, second-half chord], melody, 'solo'?].
+  // Melody values are MIDI notes; 0 is a rest and _ holds the previous note (across bars too).
   const _ = -1;
+  const PHRASE_1 = [['C', 'C'], [76, 84, _, 76, 84, _, 76, 84]];          // E C' . E C' . E C'
+  const PHRASE_2 = [['C', 'C'], [_, _, _, _, 0, 84, 86, 87]];             // ...held, then C' D' D#'
+  const PHRASE_3 = [['C', 'G7'], [88, 84, 86, 88, _, 83, 86, _]];         // E' C' D' E' . B D' .
   const SONG = [
-    [['C', 'C'], [76, _, _, 79, _, _, 76, 72]],
-    [['C', 'C'], [81, _, 79, 76, _, 72, 74, 76]],
-    [['G7', 'G7'], [77, _, _, 74, _, _, 71, 74]],
-    [['G7', 'G7'], [79, _, 77, 76, 74, _, 71, 67]],
-    [['C', 'C'], [72, _, 76, 79, _, 84, _, _]],
-    [['F', 'F'], [81, _, _, 77, _, _, 81, 84]],
-    [['C', 'A7'], [79, _, 76, 72, 73, 76, 79, 81]],
-    [['D7', 'D7'], [78, _, _, 81, _, _, 78, 74]],
-    [['G7', 'G7'], [79, _, _, 77, _, _, 74, 71]],
-    [['C', 'C'], [72, _, _, 67, 72, _, 0, 0]],
-    // A gentler, more lyrical second strain in F, so the loop doesn't wear thin.
-    [['F', 'F'], [81, _, _, 79, 77, _, 72, _]],
-    [['F', 'F'], [77, _, 81, _, 84, _, _, _]],
-    [['C7', 'C7'], [82, _, _, 81, 79, _, 76, _]],
-    [['C7', 'C7'], [79, _, 76, _, 72, _, _, _]],
-    [['F', 'F'], [77, _, _, 79, 81, _, 77, _]],
-    [['Bb', 'Bb'], [82, _, 81, _, 79, _, 77, _]],
-    [['F', 'C7'], [77, _, 76, _, 79, _, 76, _]],
-    [['F', 'F'], [77, _, _, _, 0, 0, 0, 0]],
+    // Introduction, in octaves without the left hand.
+    [['G7', 'G7'], [86, 88, 84, 81, _, 83, 79, _], 'solo'],
+    [['G7', 'G7'], [74, 76, 72, 69, _, 71, 67, _], 'solo'],
+    [['C', 'C'], [72, _, _, _, 0, 0, 74, 75]],
+    // The A strain.
+    PHRASE_1, PHRASE_2, PHRASE_3,
+    [['C', 'C'], [84, _, _, _, 0, 0, 74, 75]],
+    PHRASE_1,
+    [['C', 'D7'], [_, _, _, _, 0, 81, 79, 78]],                          // ...held, then A G F#
+    [['D7', 'D7'], [81, 84, 88, 86, _, 84, 81, 86]],                     // A C' E' D' . C' A D'
+    [['G7', 'G7'], [_, _, _, _, 0, 0, 74, 75]],
+    PHRASE_1, PHRASE_2, PHRASE_3,
+    [['C', 'C'], [84, _, _, _, 0, 84, 86, 88]],
+    [['C', 'C'], [84, 86, 88, 84, 86, 88, 84, 86]],                      // the tumbling C' D' E' run
+    [['C', 'C'], [84, 88, 84, 86, 88, 84, 86, 84]],
+    PHRASE_3,
+    [['C', 'C'], [84, _, _, _, 0, 0, 0, 0]],
   ];
 
-  let bpm = 100, step = 0, nextTime = 0, timer = null, clatterOn = false;
+  let bpm = 150, step = 0, nextTime = 0, timer = null, clatterOn = false;
   const freq = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
   // A struck string: a quick bright attack that settles and darkens as it rings.
@@ -74,17 +74,20 @@
     src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.02);
   }
 
+  const melodyAt = (i) => SONG[Math.floor(i / 8) % SONG.length][1][i % 8];
   function scheduleStep(i, t) {
     const bar = SONG[Math.floor(i / 8) % SONG.length], s = i % 8;
     const chord = CH[bar[0][s < 4 ? 0 : 1]];
-    const stepDur = 60 / bpm / 2;
-    if (s % 4 === 0) piano(s === 0 ? chord.root : chord.alt, t, 0.6, 0.15);   // oom
-    if (s % 4 === 2) chord.tones.forEach((m) => piano(m, t, 0.35, 0.045));     // pah
-    let m = bar[1][s];
+    const stepDur = 60 / bpm / 2, solo = bar[2] === 'solo';
+    if (!solo && s % 4 === 0) piano(s === 0 ? chord.root : chord.alt, t, 0.6, 0.15);   // oom
+    if (!solo && s % 4 === 2) chord.tones.forEach((m) => piano(m, t, 0.35, 0.045));     // pah
+    const m = bar[1][s];
     if (m > 0) {
       let len = 1;
-      while (s + len < 8 && bar[1][s + len] === _) len++;
-      piano(m, t, Math.max(0.35, len * stepDur * 1.5), s === 0 ? 0.12 : 0.1);
+      while (len < 16 && melodyAt(i + len) === _) len++;
+      const dur = Math.max(0.3, len * stepDur * 1.4);
+      piano(m, t, dur, s === 0 ? 0.12 : 0.1);
+      if (solo) piano(m - 12, t, dur, 0.09);
     }
   }
 
