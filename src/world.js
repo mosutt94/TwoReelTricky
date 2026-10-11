@@ -55,13 +55,13 @@
   let lastSection = -1;
 
   // The Thrill Ramp: a plank slope up to a deck, the half-pipe itself, and a deck on the far side.
-  const PIPE_R = 110, PIPE_FLAT = 120;
+  const PIPE_R = 110, PIPE_FLAT = 170;
   function addPipe(x) {
     add('slope', x, 180, PIPE_R);
     add('dock', x + 180, 90, PIPE_R, 'deck');
     const px = x + 270, w = 2 * PIPE_R + PIPE_FLAT;
     world.list.push({ kind: 'pipe', x: px, w, h: PIPE_R, base: GR, top: GR - PIPE_R, R: PIPE_R, F: PIPE_FLAT });
-    return add('dock', px + w, 200, PIPE_R, 'deck') + 80;
+    return add('dock', px + w, 330, PIPE_R, 'deck') + 80;
   }
 
   G.updateWorld = function (camX) {

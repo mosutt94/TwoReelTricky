@@ -83,7 +83,16 @@
       ctx.fillText(Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'), W - 62, 49);
     }
 
-    if (h.state === 'grind' || h.state === 'manual' || (h.state === 'pipe' && h.pStall)) balanceMeter(heroSX + 4, h.y - 96, h.bal);
+    if (h.state === 'grind' || h.state === 'manual') balanceMeter(heroSX + 4, h.y - 96, h.bal);
+    if (h.state === 'pipe') {                                   // how much air he has pumped up
+      const k = G.clamp((h.pipeH - G.PIPE.AIR_MIN) / (G.PIPE.AIR_MAX - G.PIPE.AIR_MIN), 0, 1);
+      plate(12, 62, 132, 22);
+      ctx.fillStyle = G.PAPER; ctx.textAlign = 'left'; ctx.font = '10px ' + G.BODY_FONT;
+      ctx.fillText('AIR', 22, 77);
+      ctx.fillStyle = 'rgba(239,230,208,0.25)'; ctx.fillRect(50, 68, 84, 9);
+      ctx.fillStyle = G.PAPER; ctx.fillRect(50, 68, 84 * k, 9);
+      if (h.pumping) { ctx.textAlign = 'center'; ctx.font = '12px ' + G.BODY_FONT; outlined('PUMP', heroSX + 4, h.y - 96); }
+    }
 
     ctx.textAlign = 'center';
     ctx.font = '14px ' + G.BODY_FONT;

@@ -24,7 +24,7 @@
 <canvas id="game"></canvas>
 <div id="jammed" hidden><b>The projector jammed!</b><span>Tap anywhere to start the picture again.</span><small></small></div>
 <script>
-window.TRT_PRINT = '16';
+window.TRT_PRINT = '17';
 // Shared setup: the film-frame canvas, tap/swipe input, particles and the old-film overlay.
 window.G = (function () {
   const canvas = document.getElementById('game');
@@ -798,13 +798,13 @@ window.G = (function () {
   let lastSection = -1;
 
   // The Thrill Ramp: a plank slope up to a deck, the half-pipe itself, and a deck on the far side.
-  const PIPE_R = 110, PIPE_FLAT = 120;
+  const PIPE_R = 110, PIPE_FLAT = 170;
   function addPipe(x) {
     add('slope', x, 180, PIPE_R);
     add('dock', x + 180, 90, PIPE_R, 'deck');
     const px = x + 270, w = 2 * PIPE_R + PIPE_FLAT;
     world.list.push({ kind: 'pipe', x: px, w, h: PIPE_R, base: GR, top: GR - PIPE_R, R: PIPE_R, F: PIPE_FLAT });
-    return add('dock', px + w, 200, PIPE_R, 'deck') + 80;
+    return add('dock', px + w, 330, PIPE_R, 'deck') + 80;
   }
 
   G.updateWorld = function (camX) {
@@ -1524,7 +1524,7 @@ window.G = (function () {
       bal: 0, balV: 0, balT: 0,
       hatOn: true, hatLift: 0, hatSpin: 0, board: { flip: 0, spin: 0, dy: 0 },
       arms: 'relaxed', bailT: 0, bailRot: 0, floor: GR, floorObj: null,
-      pipe: null, pAir: false, pStall: false, faceScale: 1,
+      pipe: null, pAir: false, pumping: false, popped: false, pipeH: 60, faceScale: 1, airPress: false,
     });
     camPipe = null; camBlend = 0;
     looseBoard.active = looseHat.active = false;
@@ -1779,26 +1779,31 @@ window.G = (function () {
     G.emit('dust', hero.x + 30, hero.floor, 8, 80);
   }
 
-  G.handlers.press = () => {};
+  G.handlers.press = () => { hero.airPress = hero.state === 'air' || (hero.state === 'pipe' && hero.pAir); };
   G.handlers.release = () => {
     if (hero.state === 'ground' || hero.state === 'manual' || hero.state === 'grind') pop();
+    else if (hero.state === 'pipe' && !hero.pAir) pipePop();
     hero.grabPending = -1;
   };
   // A quick flick on the ground, a rail or a manual pops straight into the trick; in the air it
   // starts one. (Slow sideways slides on a rail are balance, and never arrive here as flicks.)
+  // A grab needs a fresh press in the air, so a finger held over from a grind or a pump never
+  // turns a hat trick into one by accident.
   G.handlers.swipe = (dir, fromKey) => {
     const riding = hero.state === 'grind' || hero.state === 'manual';
     if (riding && fromKey && (dir === 'left' || dir === 'right')) return;   // arrow keys steer balance
     if (hero.state === 'ground' || riding) { pop(); hero.vy -= 60; }
     if (hero.state !== 'air' && !(hero.state === 'pipe' && hero.pAir)) return;
-    if (dir === 'up') { startHat(); if (!hero.grab) hero.grabPending = 0; }
+    if (dir === 'up') { startHat(); if (!hero.grab && hero.airPress) hero.grabPending = 0; }
     else startFlip(dir);
   };
 
   // ---- The Thrill Ramp. He rides a profile of two quarter-circle walls joined by a flat, with
-  // gravity pulling him along the curve. Off each lip he flies straight up and comes back down
-  // the same wall; holding at the top stalls on the coping. After a while he exits over the far deck.
-  const PIPE_TIME = 9;
+  // gravity pulling him along the curve. Holding on the way down a wall pumps for height, and
+  // letting go near the top pops for a burst more. Off each lip he flies straight up, turns, and
+  // comes back down the same wall. The combo runs for the whole session and banks on the way out.
+  const PIPE_TIME = 12, AIR_MIN = 60, AIR_MAX = 140, PUMP_RATE = 110, POP_BONUS = 40, G_AIR = 1450;
+  G.PIPE = { AIR_MIN, AIR_MAX };
   const pipeLen = (o) => Math.PI * o.R + o.F;
   function pipeAt(o, s) {                       // point on the profile, and its tangent toward +s
     const R = o.R, F = o.F, a = Math.PI * R / 2, cy = GR - R;
@@ -1813,17 +1818,16 @@ window.G = (function () {
     if (x <= o.x + R + F) return a + (x - o.x - R);
     return a + F + R * Math.asin(G.clamp((x - o.x - R - F) / R, -1, 1));
   }
-  const pipeSpeed = () => Math.sqrt(2 * GRAVITY * (hero.pipe.R + hero.pipeAirH));
+  const wallSpeed = () => Math.sqrt(2 * GRAVITY * (hero.pipe.R + hero.pipeH));
 
   function enterPipe(o, s, v) {
     clearAir();
-    bankCombo();
     o.done = true;
     Object.assign(hero, {
-      state: 'pipe', pipe: o, ps: s, pv: v, pAir: false, pStall: false, pipeT: 0, pipeAirH: 90, pExit: false,
+      state: 'pipe', pipe: o, ps: s, pv: v, pAir: false, pumping: false, popped: false, pipeT: 0, pipeH: AIR_MIN, pExit: false,
       support: null, onRamp: null, grind: null, speed: 0, vy: 0,
     });
-    say('THE THRILL RAMP!', 'Flick for tricks above the lip  ·  hold at the top to stall', true);
+    say('THE THRILL RAMP!', 'HOLD down the wall to pump  ·  LET GO at the top to pop', true);
   }
   // Coming down onto the half-pipe from the deck or out of the air.
   function pipeEntry() {
@@ -1842,37 +1846,34 @@ window.G = (function () {
     }
     return false;
   }
+  // Letting go on the way up a wall, near the lip: a pop for extra air.
+  function pipePop() {
+    const o = hero.pipe, L = pipeLen(o), a = Math.PI * o.R / 2;
+    const up = (hero.ps < a && hero.pv < 0) || (hero.ps > a + o.F && hero.pv > 0);
+    const near = hero.ps < a * 0.5 || hero.ps > L - a * 0.5;
+    if (up && near && !hero.popped) {
+      hero.popped = true;
+      hero.crouch = 0.1;
+      popups.push({ text: 'Pop!', t: 0 });
+      G.sfx('ollie');
+    }
+  }
   function exitPipe() {
-    const o = hero.pipe, launch = Math.min(pipeSpeed() * 0.75, 700);
-    hero.pipe = null; hero.pAir = false; hero.pStall = false;
+    const o = hero.pipe, launch = Math.min(Math.sqrt(2 * GRAVITY * (hero.pipeH + 70)), 780);
+    hero.pipe = null; hero.pAir = false; hero.pumping = false;
     hero.state = 'air';
     hero.x = o.x + o.w + 4; hero.y = GR - o.R;
     hero.vy = -launch;
-    hero.speed = 250;
+    hero.speed = 230;
     G.sfx('ollie');
   }
-  function dropIn() {
-    hero.pStall = false;
-    hero.ps = hero.pLip > 0 ? pipeLen(hero.pipe) : 0;
-    hero.pv = -hero.pLip * 120;
-    G.sfx('land');
-    bankCombo();
-  }
   function updatePipe(dt) {
-    const o = hero.pipe, L = pipeLen(o);
+    const o = hero.pipe, L = pipeLen(o), a = Math.PI * o.R / 2;
     hero.pipeT += dt;
     if (hero.pipeT > PIPE_TIME && !hero.pExit) { hero.pExit = true; say('LAST AIR!', 'Out over the far deck next time', true); }
 
-    if (hero.pStall) {                                     // balanced on the coping
-      combo.base += 120 * dt;
-      if (!balance(dt)) return bail(null, 'Lost his balance on the coping.');
-      if (hero.pExit && hero.pLip > 0) return exitPipe();
-      if (!input.down) dropIn();
-      return;
-    }
-
     if (hero.pAir) {                                       // up above the lip
-      hero.vy += GRAVITY * dt;
+      hero.vy += G_AIR * dt;
       hero.y += hero.vy * dt;
       hero.pAirT += dt;
       updateTricks(dt);
@@ -1882,38 +1883,39 @@ window.G = (function () {
         if (bad) return bail(null, bad);
         noteSketchy();
         clearAir();
-        hero.pAir = false;
-        hero.pv = -hero.pLip * hero.vy;
+        hero.pAir = false; hero.popped = false;
         hero.ps = hero.pLip > 0 ? L : 0;
-        hero.pipeAirH = Math.min(170, hero.pipeAirH + 16);  // clean airs build height
+        hero.pv = -hero.pLip * 40;                         // back down the wall; gravity does the rest
         G.emit('dust', hero.x, hero.y, 4, 40);
         G.sfx('land');
-        bankCombo();
       }
       return;
     }
 
-    // Riding the walls: gravity pulls along the curve; a little pumping keeps the swing going.
+    // Riding the walls. Holding while heading down a wall is a pump; the swing's energy is set
+    // afresh at the bottom from the height he has built.
     const prev = hero.ps;
+    const onWall = hero.ps < a || hero.ps > a + o.F;
+    const down = (hero.ps < a && hero.pv > 0) || (hero.ps > a + o.F && hero.pv < 0);
+    hero.pumping = onWall && down && input.down;
+    if (hero.pumping) {
+      hero.pipeH = Math.min(AIR_MAX, hero.pipeH + PUMP_RATE * dt);
+      if (Math.random() < 0.5) G.emit('dust', hero.x, hero.y, 1, 40);
+    }
     hero.pv += GRAVITY * pipeAt(o, hero.ps).ty * dt;
     hero.ps += hero.pv * dt;
-    if ((prev - L / 2) * (hero.ps - L / 2) <= 0) hero.pv = Math.sign(hero.pv || 1) * pipeSpeed();
+    if ((prev - L / 2) * (hero.ps - L / 2) <= 0) hero.pv = Math.sign(hero.pv || 1) * wallSpeed();
     if (hero.ps >= L || hero.ps <= 0) {
       hero.pLip = hero.ps >= L ? 1 : -1;
       hero.ps = hero.pLip > 0 ? L : 0;
       const lip = pipeAt(o, hero.ps);
       hero.x = lip.x; hero.y = lip.y;
       if (hero.pExit && hero.pLip > 0) return exitPipe();
-      if (input.down && !input.consumed) {
-        hero.pStall = true;
-        startBalance();
-        addToCombo(hero.pLip > 0 ? 'Axle Stall' : 'Rock to Fakie', 150);
-        G.sfx('grind');
-        return;
-      }
-      hero.pAir = true; hero.pAirT = 0;
-      hero.vy = -Math.abs(hero.pv); hero.pv = 0;
-      hero.pAirDur = 2 * -hero.vy / GRAVITY;
+      const H = hero.pipeH + (hero.popped ? POP_BONUS : 0);
+      hero.pAir = true; hero.pAirT = 0; hero.pv = 0;
+      hero.vy = -Math.sqrt(2 * G_AIR * H);
+      hero.pAirDur = 2 * Math.sqrt(2 * H / G_AIR);
+      hero.pipeH = Math.max(AIR_MIN, hero.pipeH - 12);     // a little is lost each swing unless he pumps
       return;
     }
     const p = pipeAt(o, hero.ps);
@@ -1921,7 +1923,7 @@ window.G = (function () {
   }
   function resumePipe() {
     Object.assign(hero, {
-      state: 'pipe', pAir: false, pStall: false, ps: pipeLen(hero.pipe) / 2, pipeAirH: 80,
+      state: 'pipe', pAir: false, pumping: false, popped: false, ps: pipeLen(hero.pipe) / 2, pipeH: AIR_MIN,
       pv: (Math.random() < 0.5 ? -1 : 1) * 400, x: hero.pipe.x + hero.pipe.w / 2, y: GR,
     });
   }
@@ -2068,7 +2070,7 @@ window.G = (function () {
     } else if (h.state === 'grind' || h.state === 'manual') {
       crouch = 0.35; arms = 'out'; tilt = h.bal * 0.35;
     } else if (h.state === 'pipe') {
-      crouch = 0.4; arms = 'relaxed';
+      crouch = h.pumping ? 1 : h.popped ? 0.15 : 0.45; arms = 'relaxed';
     } else {
       arms = h.bailT < 0.4 ? 'flail' : 'relaxed';
     }
@@ -2077,11 +2079,9 @@ window.G = (function () {
     h.push = h.state === 'ground' && !input.down && !h.onRamp && !h.support && pc < 0.6 ? pc / 0.6 : -1;
     if (h.state === 'pipe') {
       // Follow the curve; above the lip, turn upright and spin round to come back down facing in.
-      if (h.pStall) {
-        h.tilt = 0; h.faceScale = -h.pLip; crouch = 0.3; arms = 'out';
-      } else if (h.pAir) {
+      if (h.pAir) {
         const p = G.clamp(h.pAirT / h.pAirDur, 0, 1), lipAngle = h.pLip > 0 ? -Math.PI / 2 : Math.PI / 2;
-        h.tilt = lipAngle * Math.pow(Math.abs(Math.cos(Math.PI * p)), 0.7);
+        h.tilt = lipAngle * 0.35 * Math.pow(Math.abs(Math.cos(Math.PI * p)), 1.5);   // a lean at the lips, upright in between
         h.faceScale = h.pLip * Math.cos(Math.PI * p);
         crouch = h.flip ? 0.85 : 0.55; arms = h.grab ? 'grab' : 'flail';
       } else {
@@ -2235,7 +2235,16 @@ window.G = (function () {
       ctx.fillText(Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'), W - 62, 49);
     }
 
-    if (h.state === 'grind' || h.state === 'manual' || (h.state === 'pipe' && h.pStall)) balanceMeter(heroSX + 4, h.y - 96, h.bal);
+    if (h.state === 'grind' || h.state === 'manual') balanceMeter(heroSX + 4, h.y - 96, h.bal);
+    if (h.state === 'pipe') {                                   // how much air he has pumped up
+      const k = G.clamp((h.pipeH - G.PIPE.AIR_MIN) / (G.PIPE.AIR_MAX - G.PIPE.AIR_MIN), 0, 1);
+      plate(12, 62, 132, 22);
+      ctx.fillStyle = G.PAPER; ctx.textAlign = 'left'; ctx.font = '10px ' + G.BODY_FONT;
+      ctx.fillText('AIR', 22, 77);
+      ctx.fillStyle = 'rgba(239,230,208,0.25)'; ctx.fillRect(50, 68, 84, 9);
+      ctx.fillStyle = G.PAPER; ctx.fillRect(50, 68, 84 * k, 9);
+      if (h.pumping) { ctx.textAlign = 'center'; ctx.font = '12px ' + G.BODY_FONT; outlined('PUMP', heroSX + 4, h.y - 96); }
+    }
 
     ctx.textAlign = 'center';
     ctx.font = '14px ' + G.BODY_FONT;
