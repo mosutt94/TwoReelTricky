@@ -6,7 +6,8 @@
     'HOLD to crouch  ·  LET GO to ollie',
     'SWIPE in the air to flip  ·  swipe again for a double',
     'Keep HOLDING as you land on a rail to grind  ·  LET GO to pop',
-    'Land while HOLDING to manual  ·  slide your finger to balance',
+    'On a rail, FLICK to pop off into a trick  ·  slide slowly to balance',
+    'Land while HOLDING to manual  ·  it keeps the combo going',
     'Swipe UP for the Hat Trick  ·  swipe up and hold to grab',
   ];
 

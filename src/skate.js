@@ -3,7 +3,7 @@
 // for a double or triple), swipe up for the Hat Trick, or swipe up and hold to grab. Land while
 // holding to manual. Grinds and manuals need balance: slide the finger to keep the needle up.
 (function () {
-  const GR = G.GROUND, GRAVITY = 1800;
+  const GR = G.GROUND, GRAVITY = 1700;
   const input = G.input;
 
   const FLIPS = {
@@ -11,7 +11,7 @@
     right: { names: ['Heelflip', 'Double Heelflip', 'Triple Heelflip'], pts: [100, 250, 500], kind: 'flip', sign: -1 },
     down: { names: ['Pop Shove-It', '360 Shove-It', '540 Shove-It'], pts: [120, 300, 600], kind: 'spin', sign: 1 },
   };
-  const FIRST_SPIN = 0.34, EXTRA_SPIN = 0.26;
+  const FIRST_SPIN = 0.28, EXTRA_SPIN = 0.22;
   const GRINDS = {
     rail: '50-50 Grind', bench: 'Boardslide', ledge: '5-0 Grind', crate: 'Crate Slide',
     line: 'Tightrope Walk', pad: 'Curb Grind', dock: 'Dock Grind', trolley: 'Trolley Roof Grind',
@@ -32,7 +32,7 @@
     Object.assign(hero, {
       x: 0, y: GR, vy: 0, state: 'ground', speed: 120, crouch: 0.1, tilt: 0, lean: 2,
       support: null, onRamp: null, grind: null, ghost: false,
-      flip: null, queued: null, hat: null, grab: null, upPending: -1,
+      flip: null, queued: null, hat: null, grab: null, grabPending: -1,
       bal: 0, balV: 0, balT: 0,
       hatOn: true, hatLift: 0, hatSpin: 0, board: { flip: 0, spin: 0, dy: 0 },
       arms: 'relaxed', bailT: 0, bailRot: 0, floor: GR, floorObj: null,
@@ -119,8 +119,7 @@
   // ---- Tricks in the air
   function resetBoard() { hero.board.flip = hero.board.spin = hero.board.dy = 0; }
   function clearAir() {
-    hero.flip = null; hero.queued = null; hero.hat = null; hero.grab = null; hero.upPending = -1;
-    hero.hatLift = hero.hatSpin = 0;
+    hero.flip = null; hero.queued = null; hero.grab = null; hero.grabPending = -1;
     resetBoard();
   }
   function startFlip(dir) {
@@ -134,11 +133,24 @@
     if (f) { hero.queued = dir; return; }
     hero.flip = { dir, kind: def.kind, sign: def.sign, spins: 1, t: 0, dur: FIRST_SPIN, idx: addToCombo(def.names[0], def.pts[0]) };
   }
+  // The Hat Trick is pure showmanship: it never costs him a fall. It scores when he catches it.
   function startHat() {
     if (hero.hat) return;
-    hero.hat = { t: 0, dur: 0.55 };
-    addToCombo('Hat Trick', 200);
+    hero.hat = { t: 0, dur: 0.6 };
     G.sfx('whistleUp');
+  }
+  function updateHat(dt) {
+    const h = hero.hat;
+    if (!h) return;
+    h.t += dt;
+    const p = Math.min(1, h.t / h.dur);
+    hero.hatLift = Math.sin(p * Math.PI) * 56;
+    hero.hatSpin = p * Math.PI * 4;
+    if (p < 1) return;
+    hero.hat = null; hero.hatLift = hero.hatSpin = 0;
+    G.emit('dust', hero.x + 8, hero.y - 84, 4, 40);
+    if (combo.mult) addToCombo('Hat Trick', 200);             // caught mid-combo: counts toward it
+    else { score += 200; popups.push({ text: 'Hat Trick  +200', t: 0 }); }
   }
   function startGrab() {
     hero.grab = { t: 0 };
@@ -157,18 +169,10 @@
         if (hero.queued) { const q = hero.queued; hero.queued = null; startFlip(q); }
       }
     }
-    if (hero.hat) {
-      const h = hero.hat;
-      h.t += dt;
-      const p = Math.min(1, h.t / h.dur);
-      hero.hatLift = Math.sin(p * Math.PI) * 50;
-      hero.hatSpin = p * Math.PI * 4;
-      if (p >= 1) { hero.hat = null; hero.hatLift = hero.hatSpin = 0; }
-    }
-    // A flick up becomes a Hat Trick if the finger lifts, or a grab if it stays down.
-    if (hero.upPending >= 0 && (hero.upPending += dt) > 0.16) {
-      hero.upPending = -1;
-      if (input.down) startGrab(); else startHat();
+    // Flick up and keep holding: he grabs the board as well.
+    if (hero.grabPending >= 0 && (hero.grabPending += dt) > 0.18) {
+      hero.grabPending = -1;
+      if (input.down) startGrab();
     }
     if (hero.grab) {
       hero.grab.t += dt;
@@ -178,9 +182,12 @@
   }
   // Why a landing right now would go wrong, if it would.
   function unsafe() {
-    if (hero.flip && hero.flip.t < hero.flip.dur - 0.07) return 'Landed mid-flip.';
-    if (hero.hat && hero.hat.t < hero.hat.dur - 0.1) return 'The hat was still up there.';
+    if (hero.flip && hero.flip.t < hero.flip.dur - 0.12) return 'Landed mid-flip.';
     return null;
+  }
+  // Coming down just as the board finishes turning is allowed, but it isn't pretty.
+  function noteSketchy() {
+    if (hero.flip) popups.push({ text: 'Sketchy!', t: 0 });
   }
 
   // ---- Moves
@@ -190,7 +197,7 @@
       const held = G.clamp((performance.now() - input.t) / 1000, 0, 0.35);
       v = 560 + (held / 0.35) * 260 + (hero.onRamp ? 250 : 0);
     } else {
-      v = 620;                                   // popping off a rail or out of a manual
+      v = 660;                                   // popping off a rail or out of a manual
     }
     hero.vy = -v;
     hero.state = 'air';
@@ -242,7 +249,9 @@
     if (o && holding && k.grind) {
       hero.y = o.top;
       const bad = unsafe();
-      return bad ? bail(o, bad) : startGrind(o);
+      if (bad) return bail(o, bad);
+      noteSketchy();
+      return startGrind(o);
     }
     if (o && !k.flat) {
       if (o.kind === 'line') return;               // a rope: without holding on, he drops right through
@@ -252,6 +261,7 @@
     hero.y = o ? o.top : sy;
     const bad = unsafe() || (hero.grab ? 'Let go of the grab too late.' : null);
     if (bad) return bail(o, bad);
+    noteSketchy();
     hero.support = o; hero.vy = 0;
     if (holding) startManual(); else land();
   }
@@ -265,6 +275,7 @@
     hero.grind = null; hero.onRamp = null; hero.support = null;
     hero.vy = Math.max(hero.vy, -100);
     clearAir();
+    hero.hat = null; hero.hatLift = hero.hatSpin = 0;
     clearCombo();
     banner = { text: title || 'BAILED!', sub: why || BAIL_LINES[(Math.random() * BAIL_LINES.length) | 0], t: 0, bail: true };
     hero.hatOn = false;
@@ -281,12 +292,16 @@
   G.handlers.press = () => {};
   G.handlers.release = () => {
     if (hero.state === 'ground' || hero.state === 'manual' || hero.state === 'grind') pop();
-    else if (hero.state === 'air' && hero.upPending >= 0) { hero.upPending = -1; startHat(); }
+    hero.grabPending = -1;
   };
-  G.handlers.swipe = (dir) => {
-    if (hero.state === 'ground') { pop(); hero.vy -= 60; }      // flick from the ground: ollie straight into the trick
-    if (hero.state !== 'air') return;                         // on rails and manuals, sliding is for balance
-    if (dir === 'up') { if (!hero.hat && !hero.grab && hero.upPending < 0) hero.upPending = 0; }
+  // A quick flick on the ground, a rail or a manual pops straight into the trick; in the air it
+  // starts one. (Slow sideways slides on a rail are balance, and never arrive here as flicks.)
+  G.handlers.swipe = (dir, fromKey) => {
+    const riding = hero.state === 'grind' || hero.state === 'manual';
+    if (riding && fromKey && (dir === 'left' || dir === 'right')) return;   // arrow keys steer balance
+    if (hero.state === 'ground' || riding) { pop(); hero.vy -= 60; }
+    if (hero.state !== 'air') return;
+    if (dir === 'up') { startHat(); if (!hero.grab) hero.grabPending = 0; }
     else startFlip(dir);
   };
 
@@ -402,6 +417,8 @@
     } else {
       updateBail(dt);
     }
+
+    if (h.state !== 'bail') updateHat(dt);
 
     // Pose: tilt, crouch and arms.
     let crouch = 0.1, arms = 'relaxed', tilt = 0;

@@ -53,7 +53,8 @@ window.G = (function () {
 
   function press(x, y) {
     input.down = true; input.consumed = false;
-    input.sx = input.cx = input.anchor = x; input.sy = y; input.t = performance.now();
+    input.sx = input.cx = input.anchor = input.px = x; input.sy = input.py = y;
+    input.t = input.st = input.lastMove = performance.now();
     input.fx = (x * G.dpr - G.offX) / G.scale;   // position inside the film frame
     input.fy = (y * G.dpr - G.offY) / G.scale;
     G.handlers.press();
@@ -67,14 +68,22 @@ window.G = (function () {
   G.balanceInput = () => input.keyBal || G.clamp((input.cx - input.anchor) / 45, -1, 1);
 
   window.addEventListener('pointerdown', (e) => { e.preventDefault(); press(e.clientX, e.clientY); }, { passive: false });
+  // A swipe is a quick flick: 22px covered within 180ms of the finger starting to move.
+  // Slower slides (balancing on a rail) never count as swipes.
   window.addEventListener('pointermove', (e) => {
     if (!input.down) return;
+    const now = performance.now();
     input.cx = e.clientX;
     if (input.consumed) return;
+    // After a pause, measure the new movement from where the finger was resting.
+    if (now - input.lastMove > 60) { input.sx = input.px; input.sy = input.py; input.st = now - 16; }
+    input.lastMove = now;
+    input.px = e.clientX; input.py = e.clientY;
     const dx = e.clientX - input.sx, dy = e.clientY - input.sy;
     if (dx * dx + dy * dy > 22 * 22) {
-      input.sx = e.clientX; input.sy = e.clientY;
-      G.handlers.swipe(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+      const quick = now - input.st < 180;
+      input.sx = e.clientX; input.sy = e.clientY; input.st = now;
+      if (quick) G.handlers.swipe(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
     }
   });
   window.addEventListener('pointerup', release);
@@ -89,7 +98,7 @@ window.G = (function () {
       e.preventDefault();
       if (e.code === 'ArrowLeft') input.keyBal = -1;
       if (e.code === 'ArrowRight') input.keyBal = 1;
-      G.handlers.swipe(KEY_DIRS[e.code]);
+      G.handlers.swipe(KEY_DIRS[e.code], true);
     }
   });
   window.addEventListener('keyup', (e) => {
