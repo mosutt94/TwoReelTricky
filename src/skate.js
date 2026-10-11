@@ -417,6 +417,9 @@
     } else {
       arms = h.bailT < 0.4 ? 'flail' : 'relaxed';
     }
+    // Every so often on the open street he kicks along with his back foot.
+    const pc = time % 2.6;
+    h.push = h.state === 'ground' && !input.down && !h.onRamp && !h.support && pc < 0.6 ? pc / 0.6 : -1;
     h.tilt = G.lerp(h.tilt, tilt, Math.min(1, dt * 12));
     h.crouch = G.lerp(h.crouch, crouch, Math.min(1, dt * 14));
     h.arms = arms;

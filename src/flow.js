@@ -152,18 +152,22 @@
   function drawTitle(t) {
     const w = W();
     G.drawBackground(titleCam);
-    G.drawHero(G.hero, w * 0.3, t);
     G.drawForeground(titleCam);
     ctx.fillStyle = 'rgba(11,10,8,0.3)'; ctx.fillRect(0, 0, w, H);
 
-    const cw = Math.min(w - 50, 470), ch = 236, x = w / 2 - cw / 2, y = 16;
+    // On a wide screen the card sits to the right so our hero can be seen rolling along.
+    const wide = w >= 700;
+    const cw = wide ? 440 : Math.min(w - 50, 470), ch = 236, y = 16;
+    const x = wide ? w - cw - 58 : w / 2 - cw / 2;
     decoCard(x, y, cw, ch);
-    text('TWO REEL', w / 2, y + 66, '34px ' + G.TITLE_FONT);
-    text('TRICKY', w / 2, y + 118, '54px ' + G.TITLE_FONT);
-    divider(w / 2, y + 136, Math.min(150, cw / 2 - 30));
-    text('A Photoplay in Two Reels', w / 2, y + 160, '15px ' + G.BODY_FONT);
-    text('featuring Our Hero, His Hat, and a Plank on Wheels', w / 2, y + 180, '12px ' + G.BODY_FONT, G.LIGHT, cw - 40);
-    if (blink(t)) text('TAP TO ROLL FILM', w / 2, y + 210, '15px ' + G.BODY_FONT);
+    text('TWO REEL', x + cw / 2, y + 66, '34px ' + G.TITLE_FONT);
+    text('TRICKY', x + cw / 2, y + 118, '54px ' + G.TITLE_FONT);
+    divider(x + cw / 2, y + 136, Math.min(150, cw / 2 - 30));
+    text('A Photoplay in Two Reels', x + cw / 2, y + 160, '15px ' + G.BODY_FONT);
+    text('featuring Our Hero, His Hat, and a Plank on Wheels', x + cw / 2, y + 180, '12px ' + G.BODY_FONT, G.LIGHT, cw - 40);
+    if (blink(t)) text('TAP TO ROLL FILM', x + cw / 2, y + 210, '15px ' + G.BODY_FONT);
+    G.hero.push = (t % 2.6) < 0.6 ? (t % 2.6) / 0.6 : -1;
+    G.drawHero(G.hero, w * 0.3, t);
     if (best > 0) {
       ctx.fillStyle = 'rgba(23,19,13,0.85)';
       G.roundRect(w / 2 - 80, H - 40, 160, 26, 4); ctx.fill();
