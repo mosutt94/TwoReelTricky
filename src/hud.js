@@ -91,14 +91,14 @@
       ctx.fillText('AIR', 22, 77);
       ctx.fillStyle = 'rgba(239,230,208,0.25)'; ctx.fillRect(50, 68, 84, 9);
       ctx.fillStyle = G.PAPER; ctx.fillRect(50, 68, 84 * k, 9);
-      if (h.pumping) { ctx.textAlign = 'center'; ctx.font = '12px ' + G.BODY_FONT; outlined('PUMP', heroSX + 4, h.y - 96); }
+      if (h.pumping) { ctx.textAlign = 'center'; ctx.font = '12px ' + G.BODY_FONT; outlined('PUMP', heroSX + 4, h.y + G.camY - 96); }
     }
 
     ctx.textAlign = 'center';
     ctx.font = '14px ' + G.BODY_FONT;
     ui.popups.forEach((p, i) => {
       ctx.globalAlpha = 1 - p.t / 0.9;
-      outlined(p.text, heroSX + 10, Math.max(78, Math.min(h.y, GR) - 120 - p.t * 40 - (ui.popups.length - 1 - i) * 16));
+      outlined(p.text, heroSX + 10, Math.max(78, Math.min(h.y + G.camY, GR) - 120 - p.t * 40 - (ui.popups.length - 1 - i) * 16));
     });
     ctx.globalAlpha = 1;
 

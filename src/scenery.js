@@ -30,9 +30,9 @@
   const clouds = [0, 1, 2, 3].map((i) => ({ x: i * 420 + hash(i, 9) * 200, y: 40 + hash(i, 3) * 70, s: 0.7 + hash(i, 5) * 0.8 }));
   function drawSky(camX, t) {
     const W = G.viewW;
-    const sky = ctx.createLinearGradient(0, 0, 0, WALK);
-    sky.addColorStop(0, '#f1e9d6'); sky.addColorStop(0.7, '#e2d8bf'); sky.addColorStop(1, '#d9ceb3');
-    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, WALK);
+    const sky = ctx.createLinearGradient(0, -200, 0, WALK);
+    sky.addColorStop(0, '#f4edda'); sky.addColorStop(0.75, '#e2d8bf'); sky.addColorStop(1, '#d9ceb3');
+    ctx.fillStyle = sky; ctx.fillRect(0, -320, W, WALK + 320);
     // A pale sun low over the rooftops, with a haze.
     const sx = W * 0.72 - camX * 0.02, sy = 92;
     const halo = ctx.createRadialGradient(sx, sy, 10, sx, sy, 150);

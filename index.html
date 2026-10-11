@@ -24,7 +24,7 @@
 <canvas id="game"></canvas>
 <div id="jammed" hidden><b>The projector jammed!</b><span>Tap anywhere to start the picture again.</span><small></small></div>
 <script>
-window.TRT_PRINT = '17';
+window.TRT_PRINT = '18';
 // Shared setup: the film-frame canvas, tap/swipe input, particles and the old-film overlay.
 window.G = (function () {
   const canvas = document.getElementById('game');
@@ -1032,9 +1032,9 @@ window.G = (function () {
   const clouds = [0, 1, 2, 3].map((i) => ({ x: i * 420 + hash(i, 9) * 200, y: 40 + hash(i, 3) * 70, s: 0.7 + hash(i, 5) * 0.8 }));
   function drawSky(camX, t) {
     const W = G.viewW;
-    const sky = ctx.createLinearGradient(0, 0, 0, WALK);
-    sky.addColorStop(0, '#f1e9d6'); sky.addColorStop(0.7, '#e2d8bf'); sky.addColorStop(1, '#d9ceb3');
-    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, WALK);
+    const sky = ctx.createLinearGradient(0, -200, 0, WALK);
+    sky.addColorStop(0, '#f4edda'); sky.addColorStop(0.75, '#e2d8bf'); sky.addColorStop(1, '#d9ceb3');
+    ctx.fillStyle = sky; ctx.fillRect(0, -320, W, WALK + 320);
     // A pale sun low over the rooftops, with a haze.
     const sx = W * 0.72 - camX * 0.02, sy = 92;
     const halo = ctx.createRadialGradient(sx, sy, 10, sx, sy, 150);
@@ -1526,7 +1526,7 @@ window.G = (function () {
       arms: 'relaxed', bailT: 0, bailRot: 0, floor: GR, floorObj: null,
       pipe: null, pAir: false, pumping: false, popped: false, pipeH: 60, faceScale: 1, airPress: false,
     });
-    camPipe = null; camBlend = 0;
+    camPipe = null; camBlend = 0; camY = 0; G.camY = 0;
     looseBoard.active = looseHat.active = false;
     clearCombo();
     popups.length = 0;
@@ -2102,7 +2102,8 @@ window.G = (function () {
   }
 
   // The camera follows him along the street, and eases over to hold the whole half-pipe in view.
-  let camPipe = null, camBlend = 0, lastDraw = 0;
+  let camPipe = null, camBlend = 0, lastDraw = 0, camY = 0;
+  G.camY = 0;
   function draw(t, withHUD) {
     const dt = Math.min(0.05, Math.max(0, t - lastDraw));
     lastDraw = t;
@@ -2112,6 +2113,11 @@ window.G = (function () {
     const ease = camBlend * camBlend * (3 - 2 * camBlend);
     const camX = camPipe ? G.lerp(follow, camPipe.x + camPipe.w / 2 - G.viewW / 2, ease) : follow;
     const heroSX = hero.x - camX;
+    // On the ramp the view tilts up to keep him in the picture at the top of a big air.
+    camY = G.lerp(camY, hero.pipe ? G.clamp(150 - hero.y, 0, 170) : 0, Math.min(1, dt * 7));
+    G.camY = camY;
+    G.ctx.save();
+    G.ctx.translate(0, camY);
     G.drawBackground(camX, t);
     G.drawObstacles(camX, t);
     G.drawParticles(camX);
@@ -2125,6 +2131,7 @@ window.G = (function () {
     if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
     G.chase.drawOver(camX, heroSX, t);
     if (camBlend < 0.3) G.drawForeground(camX);      // keep lamp posts out of the way at the Thrill Ramp
+    G.ctx.restore();
     if (withHUD) G.drawHUD(heroSX, camX, t);
     return heroSX;
   }
@@ -2243,14 +2250,14 @@ window.G = (function () {
       ctx.fillText('AIR', 22, 77);
       ctx.fillStyle = 'rgba(239,230,208,0.25)'; ctx.fillRect(50, 68, 84, 9);
       ctx.fillStyle = G.PAPER; ctx.fillRect(50, 68, 84 * k, 9);
-      if (h.pumping) { ctx.textAlign = 'center'; ctx.font = '12px ' + G.BODY_FONT; outlined('PUMP', heroSX + 4, h.y - 96); }
+      if (h.pumping) { ctx.textAlign = 'center'; ctx.font = '12px ' + G.BODY_FONT; outlined('PUMP', heroSX + 4, h.y + G.camY - 96); }
     }
 
     ctx.textAlign = 'center';
     ctx.font = '14px ' + G.BODY_FONT;
     ui.popups.forEach((p, i) => {
       ctx.globalAlpha = 1 - p.t / 0.9;
-      outlined(p.text, heroSX + 10, Math.max(78, Math.min(h.y, GR) - 120 - p.t * 40 - (ui.popups.length - 1 - i) * 16));
+      outlined(p.text, heroSX + 10, Math.max(78, Math.min(h.y + G.camY, GR) - 120 - p.t * 40 - (ui.popups.length - 1 - i) * 16));
     });
     ctx.globalAlpha = 1;
 

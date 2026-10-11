@@ -38,7 +38,7 @@
       arms: 'relaxed', bailT: 0, bailRot: 0, floor: GR, floorObj: null,
       pipe: null, pAir: false, pumping: false, popped: false, pipeH: 60, faceScale: 1, airPress: false,
     });
-    camPipe = null; camBlend = 0;
+    camPipe = null; camBlend = 0; camY = 0; G.camY = 0;
     looseBoard.active = looseHat.active = false;
     clearCombo();
     popups.length = 0;
@@ -614,7 +614,8 @@
   }
 
   // The camera follows him along the street, and eases over to hold the whole half-pipe in view.
-  let camPipe = null, camBlend = 0, lastDraw = 0;
+  let camPipe = null, camBlend = 0, lastDraw = 0, camY = 0;
+  G.camY = 0;
   function draw(t, withHUD) {
     const dt = Math.min(0.05, Math.max(0, t - lastDraw));
     lastDraw = t;
@@ -624,6 +625,11 @@
     const ease = camBlend * camBlend * (3 - 2 * camBlend);
     const camX = camPipe ? G.lerp(follow, camPipe.x + camPipe.w / 2 - G.viewW / 2, ease) : follow;
     const heroSX = hero.x - camX;
+    // On the ramp the view tilts up to keep him in the picture at the top of a big air.
+    camY = G.lerp(camY, hero.pipe ? G.clamp(150 - hero.y, 0, 170) : 0, Math.min(1, dt * 7));
+    G.camY = camY;
+    G.ctx.save();
+    G.ctx.translate(0, camY);
     G.drawBackground(camX, t);
     G.drawObstacles(camX, t);
     G.drawParticles(camX);
@@ -637,6 +643,7 @@
     if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
     G.chase.drawOver(camX, heroSX, t);
     if (camBlend < 0.3) G.drawForeground(camX);      // keep lamp posts out of the way at the Thrill Ramp
+    G.ctx.restore();
     if (withHUD) G.drawHUD(heroSX, camX, t);
     return heroSX;
   }
