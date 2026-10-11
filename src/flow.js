@@ -10,6 +10,8 @@
   let best = 0, newBest = false, nabbed = false;
   // When the falling houses turn up, in seconds into each reel.
   const FACADES = { 1: [24], 2: [12, 40] };
+  // ...and when the Thrill Ramp half-pipe turns up.
+  const PIPES = { 1: [36], 2: [24] };
   try { best = +localStorage.getItem('trt-best') || 0; } catch (e) { /* storage unavailable */ }
   G.clock = null;
 
@@ -27,7 +29,7 @@
   }
   function showCard(r) { reel = r; go('card'); }
   function beginReel() {
-    G.clock = { reel, left: REEL_SECONDS, facades: FACADES[reel].slice() };
+    G.clock = { reel, left: REEL_SECONDS, facades: FACADES[reel].slice(), pipes: PIPES[reel].slice() };
     G.audio.setTempo(reel === 1 ? 150 : 166);
     G.audio.setClatter(true);
     go('play');
@@ -80,6 +82,7 @@
       G.clock.left -= dt;
       const c = G.clock;
       if (c.facades.length && REEL_SECONDS - c.left >= c.facades[0]) { c.facades.shift(); G.world.wantFacade = true; }
+      if (c.pipes.length && REEL_SECONDS - c.left >= c.pipes[0]) { c.pipes.shift(); G.world.wantPipe = true; }
       if (G.chase.nabT() > 1.8) { nabbed = true; go('iris'); return; }
       // Let a trick in progress finish before the reel runs out.
       if (G.clock.left <= 0 && (play.settled() || G.clock.left < -3)) {

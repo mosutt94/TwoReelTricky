@@ -87,6 +87,8 @@
       ctx.rotate(h.bailRot);                   // falls flat like a plank, pivoting at the feet
     } else {
       ctx.rotate(h.tilt);
+      const fs = h.faceScale === undefined ? 1 : h.faceScale;      // turning round in the half-pipe
+      if (fs !== 1) ctx.scale(Math.abs(fs) < 0.06 ? (fs < 0 ? -0.06 : 0.06) : fs, 1);
       if (h.state === 'manual') { ctx.translate(-14, 0); ctx.rotate(-0.24); ctx.translate(14, 0); }
       drawBoard(h.board.flip, h.board.spin, h.board.dy);
     }

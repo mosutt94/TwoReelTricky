@@ -36,7 +36,9 @@
       bal: 0, balV: 0, balT: 0,
       hatOn: true, hatLift: 0, hatSpin: 0, board: { flip: 0, spin: 0, dy: 0 },
       arms: 'relaxed', bailT: 0, bailRot: 0, floor: GR, floorObj: null,
+      pipe: null, pAir: false, pStall: false, faceScale: 1,
     });
+    camPipe = null; camBlend = 0;
     looseBoard.active = looseHat.active = false;
     clearCombo();
     popups.length = 0;
@@ -50,7 +52,7 @@
   const kind = (o) => G.KINDS[o.kind] || {};
   const list = () => G.world.list;
   function rampAt(x) {
-    for (const o of list()) if (o.kind === 'kicker' && x >= o.x && x <= o.x + o.w) return o;
+    for (const o of list()) if (kind(o).ramp && x >= o.x && x <= o.x + o.w) return o;
     return null;
   }
   function streetY(x) { const r = rampAt(x); return r ? GR - r.h * (x - r.x) / r.w : GR; }
@@ -300,10 +302,141 @@
     const riding = hero.state === 'grind' || hero.state === 'manual';
     if (riding && fromKey && (dir === 'left' || dir === 'right')) return;   // arrow keys steer balance
     if (hero.state === 'ground' || riding) { pop(); hero.vy -= 60; }
-    if (hero.state !== 'air') return;
+    if (hero.state !== 'air' && !(hero.state === 'pipe' && hero.pAir)) return;
     if (dir === 'up') { startHat(); if (!hero.grab) hero.grabPending = 0; }
     else startFlip(dir);
   };
+
+  // ---- The Thrill Ramp. He rides a profile of two quarter-circle walls joined by a flat, with
+  // gravity pulling him along the curve. Off each lip he flies straight up and comes back down
+  // the same wall; holding at the top stalls on the coping. After a while he exits over the far deck.
+  const PIPE_TIME = 9;
+  const pipeLen = (o) => Math.PI * o.R + o.F;
+  function pipeAt(o, s) {                       // point on the profile, and its tangent toward +s
+    const R = o.R, F = o.F, a = Math.PI * R / 2, cy = GR - R;
+    if (s <= a) { const p = s / R; return { x: o.x + R - R * Math.cos(p), y: cy + R * Math.sin(p), tx: Math.sin(p), ty: Math.cos(p) }; }
+    if (s <= a + F) return { x: o.x + R + (s - a), y: GR, tx: 1, ty: 0 };
+    const q = (s - a - F) / R;
+    return { x: o.x + R + F + R * Math.sin(q), y: cy + R * Math.cos(q), tx: Math.cos(q), ty: -Math.sin(q) };
+  }
+  function pipeSAt(o, x) {
+    const R = o.R, F = o.F, a = Math.PI * R / 2;
+    if (x <= o.x + R) return R * Math.acos(G.clamp((o.x + R - x) / R, -1, 1));
+    if (x <= o.x + R + F) return a + (x - o.x - R);
+    return a + F + R * Math.asin(G.clamp((x - o.x - R - F) / R, -1, 1));
+  }
+  const pipeSpeed = () => Math.sqrt(2 * GRAVITY * (hero.pipe.R + hero.pipeAirH));
+
+  function enterPipe(o, s, v) {
+    clearAir();
+    bankCombo();
+    o.done = true;
+    Object.assign(hero, {
+      state: 'pipe', pipe: o, ps: s, pv: v, pAir: false, pStall: false, pipeT: 0, pipeAirH: 90, pExit: false,
+      support: null, onRamp: null, grind: null, speed: 0, vy: 0,
+    });
+    say('THE THRILL RAMP!', 'Flick for tricks above the lip  ·  hold at the top to stall', true);
+  }
+  // Coming down onto the half-pipe from the deck or out of the air.
+  function pipeEntry() {
+    for (const o of list()) {
+      if (o.kind !== 'pipe' || o.done || hero.x < o.x || hero.x > o.x + o.w) continue;
+      const s = pipeSAt(o, hero.x), p = pipeAt(o, s);
+      if (hero.state === 'air') {
+        if (hero.y < p.y) return false;
+        hero.y = p.y;
+        const bad = unsafe() || (hero.grab ? 'Let go of the grab too late.' : null);
+        if (bad) { hero.pipe = o; o.done = true; bail(null, bad); return true; }
+        noteSketchy();
+      }
+      enterPipe(o, s, Math.max(150, hero.speed * 0.6));
+      return true;
+    }
+    return false;
+  }
+  function exitPipe() {
+    const o = hero.pipe, launch = Math.min(pipeSpeed() * 0.75, 700);
+    hero.pipe = null; hero.pAir = false; hero.pStall = false;
+    hero.state = 'air';
+    hero.x = o.x + o.w + 4; hero.y = GR - o.R;
+    hero.vy = -launch;
+    hero.speed = 250;
+    G.sfx('ollie');
+  }
+  function dropIn() {
+    hero.pStall = false;
+    hero.ps = hero.pLip > 0 ? pipeLen(hero.pipe) : 0;
+    hero.pv = -hero.pLip * 120;
+    G.sfx('land');
+    bankCombo();
+  }
+  function updatePipe(dt) {
+    const o = hero.pipe, L = pipeLen(o);
+    hero.pipeT += dt;
+    if (hero.pipeT > PIPE_TIME && !hero.pExit) { hero.pExit = true; say('LAST AIR!', 'Out over the far deck next time', true); }
+
+    if (hero.pStall) {                                     // balanced on the coping
+      combo.base += 120 * dt;
+      if (!balance(dt)) return bail(null, 'Lost his balance on the coping.');
+      if (hero.pExit && hero.pLip > 0) return exitPipe();
+      if (!input.down) dropIn();
+      return;
+    }
+
+    if (hero.pAir) {                                       // up above the lip
+      hero.vy += GRAVITY * dt;
+      hero.y += hero.vy * dt;
+      hero.pAirT += dt;
+      updateTricks(dt);
+      if (hero.vy > 0 && hero.y >= GR - o.R) {
+        hero.y = GR - o.R;
+        const bad = unsafe() || (hero.grab ? 'Let go of the grab too late.' : null);
+        if (bad) return bail(null, bad);
+        noteSketchy();
+        clearAir();
+        hero.pAir = false;
+        hero.pv = -hero.pLip * hero.vy;
+        hero.ps = hero.pLip > 0 ? L : 0;
+        hero.pipeAirH = Math.min(170, hero.pipeAirH + 16);  // clean airs build height
+        G.emit('dust', hero.x, hero.y, 4, 40);
+        G.sfx('land');
+        bankCombo();
+      }
+      return;
+    }
+
+    // Riding the walls: gravity pulls along the curve; a little pumping keeps the swing going.
+    const prev = hero.ps;
+    hero.pv += GRAVITY * pipeAt(o, hero.ps).ty * dt;
+    hero.ps += hero.pv * dt;
+    if ((prev - L / 2) * (hero.ps - L / 2) <= 0) hero.pv = Math.sign(hero.pv || 1) * pipeSpeed();
+    if (hero.ps >= L || hero.ps <= 0) {
+      hero.pLip = hero.ps >= L ? 1 : -1;
+      hero.ps = hero.pLip > 0 ? L : 0;
+      const lip = pipeAt(o, hero.ps);
+      hero.x = lip.x; hero.y = lip.y;
+      if (hero.pExit && hero.pLip > 0) return exitPipe();
+      if (input.down && !input.consumed) {
+        hero.pStall = true;
+        startBalance();
+        addToCombo(hero.pLip > 0 ? 'Axle Stall' : 'Rock to Fakie', 150);
+        G.sfx('grind');
+        return;
+      }
+      hero.pAir = true; hero.pAirT = 0;
+      hero.vy = -Math.abs(hero.pv); hero.pv = 0;
+      hero.pAirDur = 2 * -hero.vy / GRAVITY;
+      return;
+    }
+    const p = pipeAt(o, hero.ps);
+    hero.x = p.x; hero.y = p.y;
+  }
+  function resumePipe() {
+    Object.assign(hero, {
+      state: 'pipe', pAir: false, pStall: false, ps: pipeLen(hero.pipe) / 2, pipeAirH: 80,
+      pv: (Math.random() < 0.5 ? -1 : 1) * 400, x: hero.pipe.x + hero.pipe.w / 2, y: GR,
+    });
+  }
 
   // ---- Simulation
   function updateRolling(dt) {
@@ -316,7 +449,13 @@
       if (r) {
         hero.onRamp = r; hero.y = GR - r.h * (hero.x - r.x) / r.w;
       } else if (hero.onRamp) {
-        hero.onRamp = null; hero.state = 'air'; hero.vy = -(420 + hero.speed * 1.5);
+        const r0 = hero.onRamp;
+        hero.onRamp = null;
+        if (r0.kind === 'slope') {               // a slope leads onto a deck rather than launching
+          const deck = list().find((o) => kind(o).flat && Math.abs(o.x - (r0.x + r0.w)) < 3);
+          if (deck) { hero.support = deck; hero.y = deck.top; return; }
+        }
+        hero.state = 'air'; hero.vy = -(420 + hero.speed * 1.5);
         G.sfx('ollie');
         return;
       } else {
@@ -331,6 +470,7 @@
   function updateBail(dt) {
     const bt = (hero.bailT += dt), F = hero.floor;
     hero.speed = Math.max(0, hero.speed - 520 * dt);
+    if (hero.pipe) hero.x = G.lerp(hero.x, hero.pipe.x + hero.pipe.w / 2, Math.min(1, dt * 3));   // tumbles down into the pipe
     if (hero.y < F) { hero.vy += GRAVITY * dt; hero.y = Math.min(F, hero.y + hero.vy * dt); }
 
     // Falls flat like a plank, bounces once, lies there, then springs back up.
@@ -369,6 +509,7 @@
       hero.state = 'ground'; hero.y = F; hero.vy = 0; hero.ghost = true;
       hero.support = hero.floorObj;
       hero.hatOn = true; looseHat.active = false; looseBoard.active = false;
+      if (hero.pipe) resumePipe();
     }
   }
 
@@ -385,11 +526,17 @@
       return;
     }
     const target = 250 + Math.min(time, 120) * 0.6 + (G.clock && G.clock.reel === 2 ? 20 : 0);
-    if (h.state !== 'bail') h.speed = Math.min(target, h.speed + 260 * dt);
-    h.x += h.speed * dt;
+    if (!h.pipe) {
+      if (h.state !== 'bail') h.speed = Math.min(target, h.speed + 260 * dt);
+      h.x += h.speed * dt;
+    }
     G.updateWorld(h.x - G.viewW * 0.3);
 
-    if (h.state === 'ground' || h.state === 'manual') {
+    if ((h.state === 'ground' || h.state === 'manual' || h.state === 'air') && pipeEntry()) {
+      // dropped into the half-pipe this frame
+    } else if (h.state === 'pipe') {
+      updatePipe(dt);
+    } else if (h.state === 'ground' || h.state === 'manual') {
       updateRolling(dt);
       if (h.state === 'manual') {
         combo.base += 120 * dt;
@@ -431,13 +578,32 @@
       tilt = G.clamp(h.vy / 4000, -0.12, 0.18);
     } else if (h.state === 'grind' || h.state === 'manual') {
       crouch = 0.35; arms = 'out'; tilt = h.bal * 0.35;
+    } else if (h.state === 'pipe') {
+      crouch = 0.4; arms = 'relaxed';
     } else {
       arms = h.bailT < 0.4 ? 'flail' : 'relaxed';
     }
     // Every so often on the open street he kicks along with his back foot.
     const pc = time % 2.6;
     h.push = h.state === 'ground' && !input.down && !h.onRamp && !h.support && pc < 0.6 ? pc / 0.6 : -1;
-    h.tilt = G.lerp(h.tilt, tilt, Math.min(1, dt * 12));
+    if (h.state === 'pipe') {
+      // Follow the curve; above the lip, turn upright and spin round to come back down facing in.
+      if (h.pStall) {
+        h.tilt = 0; h.faceScale = -h.pLip; crouch = 0.3; arms = 'out';
+      } else if (h.pAir) {
+        const p = G.clamp(h.pAirT / h.pAirDur, 0, 1), lipAngle = h.pLip > 0 ? -Math.PI / 2 : Math.PI / 2;
+        h.tilt = lipAngle * Math.pow(Math.abs(Math.cos(Math.PI * p)), 0.7);
+        h.faceScale = h.pLip * Math.cos(Math.PI * p);
+        crouch = h.flip ? 0.85 : 0.55; arms = h.grab ? 'grab' : 'flail';
+      } else {
+        const g = pipeAt(h.pipe, h.ps);
+        h.tilt = Math.atan2(g.ty, g.tx);
+        h.faceScale = h.pv >= 0 ? 1 : -1;
+      }
+    } else {
+      h.faceScale = 1;
+      h.tilt = G.lerp(h.tilt, tilt, Math.min(1, dt * 12));
+    }
     h.crouch = G.lerp(h.crouch, crouch, Math.min(1, dt * 14));
     h.arms = arms;
 
@@ -446,9 +612,17 @@
     tickText(dt);
   }
 
+  // The camera follows him along the street, and eases over to hold the whole half-pipe in view.
+  let camPipe = null, camBlend = 0, lastDraw = 0;
   function draw(t, withHUD) {
-    const heroSX = G.viewW * 0.3;
-    const camX = hero.x - heroSX;
+    const dt = Math.min(0.05, Math.max(0, t - lastDraw));
+    lastDraw = t;
+    if (hero.pipe) camPipe = hero.pipe;
+    camBlend = G.clamp(camBlend + (hero.pipe ? dt : -dt) * 1.8, 0, 1);
+    const follow = hero.x - G.viewW * 0.3;
+    const ease = camBlend * camBlend * (3 - 2 * camBlend);
+    const camX = camPipe ? G.lerp(follow, camPipe.x + camPipe.w / 2 - G.viewW / 2, ease) : follow;
+    const heroSX = hero.x - camX;
     G.drawBackground(camX);
     G.drawObstacles(camX, t);
     G.drawParticles(camX);
@@ -457,7 +631,7 @@
     G.drawHero(hero, heroSX, t);
     if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
     G.chase.drawOver(camX, heroSX, t);
-    G.drawForeground(camX);
+    if (camBlend < 0.3) G.drawForeground(camX);      // keep lamp posts out of the way at the Thrill Ramp
     if (withHUD) G.drawHUD(heroSX, camX, t);
     return heroSX;
   }

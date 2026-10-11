@@ -133,13 +133,15 @@
     pad: { grind: true, flat: true, solid: true },
     dock: { grind: true, flat: true, solid: true },
     trolley: { grind: true, flat: true, solid: true },
-    kicker: {},
+    kicker: { ramp: true },
+    slope: { ramp: true },        // a long plank up to a deck; it doesn't launch him
+    pipe: {},                     // the half-pipe has its own rules in skate.js
     facade: {},
   };
 
-  const world = G.world = { list: [], nextX: 700, wantFacade: false, hints: 0 };
+  const world = G.world = { list: [], nextX: 700, wantFacade: false, wantPipe: false, hints: 0 };
   world.reset = function () {
-    world.list.length = 0; world.nextX = 700; world.wantFacade = false; world.hints = 0;
+    world.list.length = 0; world.nextX = 700; world.wantFacade = false; world.wantPipe = false; world.hints = 0;
   };
   function add(kind, x, w, h, variant, base) {
     base = base === undefined ? GR : base;
@@ -170,10 +172,23 @@
   ];
   let lastSection = -1;
 
+  // The Thrill Ramp: a plank slope up to a deck, the half-pipe itself, and a deck on the far side.
+  const PIPE_R = 110, PIPE_FLAT = 120;
+  function addPipe(x) {
+    add('slope', x, 180, PIPE_R);
+    add('dock', x + 180, 90, PIPE_R, 'deck');
+    const px = x + 270, w = 2 * PIPE_R + PIPE_FLAT;
+    world.list.push({ kind: 'pipe', x: px, w, h: PIPE_R, base: GR, top: GR - PIPE_R, R: PIPE_R, F: PIPE_FLAT });
+    return add('dock', px + w, 200, PIPE_R, 'deck') + 80;
+  }
+
   G.updateWorld = function (camX) {
     while (world.nextX < camX + G.viewW + 500) {
       let end;
-      if (world.wantFacade) {                  // a falling house gets the street to itself
+      if (world.wantPipe) {
+        world.wantPipe = false;
+        end = addPipe(world.nextX + 80);
+      } else if (world.wantFacade) {           // a falling house gets the street to itself
         world.wantFacade = false;
         end = add('facade', world.nextX + 260, 170, 200) + 380;
       } else {
@@ -244,10 +259,12 @@
       for (let bx = x + 14; bx < x + w; bx += 14) { ctx.beginPath(); ctx.moveTo(bx, top + 5); ctx.lineTo(bx, base); ctx.stroke(); }
       ctx.fillStyle = G.INK;
       ctx.fillRect(x + 6, top + 6, 6, o.h - 6); ctx.fillRect(x + w - 12, top + 6, 6, o.h - 6);
-      ctx.fillRect(x + w / 2 - 44, top + 13, 88, 16);
-      ctx.fillStyle = G.PAPER; ctx.font = '11px ' + G.BODY_FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('FREIGHT', x + w / 2, top + 21.5);
-      ctx.textBaseline = 'alphabetic';
+      if (o.variant !== 'deck') {
+        ctx.fillRect(x + w / 2 - 44, top + 13, 88, 16);
+        ctx.fillStyle = G.PAPER; ctx.font = '11px ' + G.BODY_FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('FREIGHT', x + w / 2, top + 21.5);
+        ctx.textBaseline = 'alphabetic';
+      }
       ctx.fillStyle = G.DARK; ctx.fillRect(x - 4, top, w + 8, 6);
       ctx.strokeStyle = G.INK; ctx.lineWidth = 1.2; ctx.strokeRect(x - 4, top, w + 8, 6);
     } else if (o.kind === 'trolley') {         // a parked streetcar, roof and all
@@ -266,6 +283,57 @@
       ctx.fillText('MAIN ST.  ·  CITY LINE', x + w / 2, bodyTop + 55);
       ctx.fillStyle = G.INK; ctx.fillRect(x + 10, base - 18, w - 20, 4);
       for (const wx of [x + 50, x + 90, x + w - 90, x + w - 50]) { ctx.beginPath(); ctx.arc(wx, base - 8, 8, 0, 7); ctx.fill(); }
+    } else if (o.kind === 'slope') {           // plank ramp on timber legs
+      ctx.fillStyle = '#8f8166';
+      ctx.beginPath(); ctx.moveTo(x, base); ctx.lineTo(x + w, top); ctx.lineTo(x + w, base); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(23,19,13,0.5)'; ctx.lineWidth = 2;
+      for (let px = x + 30; px < x + w; px += 30) {
+        ctx.beginPath(); ctx.moveTo(px, base); ctx.lineTo(px, base - o.h * (px - x) / w + 3); ctx.stroke();
+      }
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(x, base); ctx.lineTo(x + w, top); ctx.stroke();
+      ctx.strokeStyle = '#a89878'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x + 2, base - 1.5); ctx.lineTo(x + w, top - 1); ctx.stroke();
+    } else if (o.kind === 'pipe') {            // the Thrill Ramp: a wooden half-pipe on a timber trestle
+      const R = o.R, F = o.F, x2 = x + 2 * R + F;
+      const surface = () => {
+        ctx.beginPath(); ctx.moveTo(x, top);
+        ctx.arc(x + R, top, R, Math.PI, Math.PI / 2, true);
+        ctx.lineTo(x + R + F, base);
+        ctx.arc(x + R + F, top, R, Math.PI / 2, 0, true);
+      };
+      // Bunting, poles and the sign overhead.
+      ctx.strokeStyle = G.SHADOW; ctx.lineWidth = 3;
+      for (const px of [x - 40, x2 + 40]) { ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, 30); ctx.stroke(); }
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x - 40, 34); ctx.quadraticCurveTo((x + x2) / 2, 70, x2 + 40, 34); ctx.stroke();
+      for (let k = 1; k < 14; k++) {
+        const u = k / 14, bx = G.lerp(x - 40, x2 + 40, u), by = 34 + 4 * 36 * u * (1 - u) * 0.5 + Math.sin(t * 4 + k) * 0.6;
+        ctx.fillStyle = k % 2 ? G.PAPER : G.DARK;
+        ctx.beginPath(); ctx.moveTo(bx - 5, by); ctx.lineTo(bx + 5, by); ctx.lineTo(bx, by + 10); ctx.closePath(); ctx.fill();
+      }
+      const sx = (x + x2) / 2;
+      ctx.fillStyle = G.INK; ctx.fillRect(sx - 62, 58, 124, 24);
+      ctx.strokeStyle = G.PAPER; ctx.lineWidth = 1; ctx.strokeRect(sx - 58, 61, 116, 18);
+      ctx.fillStyle = G.PAPER; ctx.font = '14px ' + G.TITLE_FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('THRILL RAMP', sx, 70.5);
+      ctx.textBaseline = 'alphabetic';
+      // Timber under the curve.
+      surface(); ctx.lineTo(x2, base); ctx.lineTo(x, base); ctx.closePath();
+      ctx.fillStyle = '#8f8166'; ctx.fill();
+      ctx.save(); ctx.clip();
+      ctx.strokeStyle = 'rgba(23,19,13,0.35)'; ctx.lineWidth = 1;
+      for (let px = x + 12; px < x2; px += 12) { ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, base); ctx.stroke(); }
+      ctx.strokeStyle = 'rgba(23,19,13,0.55)'; ctx.lineWidth = 2;
+      for (const [a, b] of [[x, x + R], [x2 - R, x2]]) {
+        ctx.beginPath(); ctx.moveTo(a, top); ctx.lineTo(b, base); ctx.moveTo(b, top); ctx.lineTo(a, base); ctx.stroke();
+      }
+      ctx.restore();
+      // Riding surface and steel coping.
+      surface(); ctx.strokeStyle = G.INK; ctx.lineWidth = 5; ctx.stroke();
+      surface(); ctx.strokeStyle = '#b3a483'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = G.INK;
+      for (const cx of [x, x2]) { ctx.beginPath(); ctx.arc(cx, top, 3.5, 0, 7); ctx.fill(); }
     } else if (o.kind === 'kicker') {
       ctx.fillStyle = '#7d705a'; G.roundRect(x + w - 24, top + 4, 22, o.h - 4, 5); ctx.fill();
       ctx.strokeStyle = G.INK; ctx.lineWidth = 1.5; ctx.stroke();

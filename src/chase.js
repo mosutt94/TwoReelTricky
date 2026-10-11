@@ -194,7 +194,7 @@
   // Behind the hero: house fronts, then the squad.
   function draw(camX, heroSX, t) {
     for (const o of G.world.list) if (o.kind === 'facade' && !squashed(o)) drawFacade(o, o.x - camX);
-    if (cops.nabT >= 0 || cops.shown > 0.92) return;
+    if (cops.nabT >= 0 || cops.shown > 0.92 || G.hero.pipe) return;
     for (let i = SQUAD - 1; i >= 0; i--) {
       const lag = cops.trips[i] > 0 ? (0.9 - cops.trips[i]) * 50 : 0;
       const x = heroSX - 48 - cops.shown * 320 - i * 24 - lag;
@@ -210,6 +210,7 @@
   G.chase = {
     reset, update, draw, drawOver,
     onBail() {
+      if (G.hero.pipe) return;                  // no cops at the Thrill Ramp
       cops.dist = Math.max(0, cops.dist - (G.clock && G.clock.reel === 2 ? 0.36 : 0.3));
       if (cops.dist < 0.5) G.sfx('whistle');
     },

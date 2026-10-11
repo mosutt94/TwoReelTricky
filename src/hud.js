@@ -83,7 +83,7 @@
       ctx.fillText(Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'), W - 62, 49);
     }
 
-    if (h.state === 'grind' || h.state === 'manual') balanceMeter(heroSX + 4, h.y - 96, h.bal);
+    if (h.state === 'grind' || h.state === 'manual' || (h.state === 'pipe' && h.pStall)) balanceMeter(heroSX + 4, h.y - 96, h.bal);
 
     ctx.textAlign = 'center';
     ctx.font = '14px ' + G.BODY_FONT;
