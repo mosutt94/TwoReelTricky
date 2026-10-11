@@ -14,18 +14,30 @@
   const BAIL_LINES = ['Not a flicker of expression.', 'He meant to do that.', 'The hat, as ever, survives.',
     'Dignity: temporarily misplaced.', 'A face of perfect calm.', 'The pavement wins this round.'];
 
-  const hero = G.hero = {
-    x: 0, y: GR, vy: 0, state: 'ground', speed: 120, crouch: 0.1, tilt: 0, lean: 2,
-    trick: null, queued: null, grind: null, onRamp: null, charging: false, ghost: false,
-    hatOn: true, hatLift: 0, hatSpin: 0, board: { flip: 0, spin: 0, dy: 0 },
-    arms: 'relaxed', bailT: 0, bailRot: 0,
-  };
+  const hero = G.hero = {};
   const looseBoard = { active: false }, looseHat = { active: false };
   const combo = { names: [], base: 0, mult: 0, counts: {} };
   const popups = [];
+  const stats = G.stats = { bestCombo: 0, bails: 0 };
   let banner = null, score = 0, time = 0;
   G.getScore = () => score;
   G.combo = combo;
+
+  function reset() {
+    Object.assign(hero, {
+      x: 0, y: GR, vy: 0, state: 'ground', speed: 120, crouch: 0.1, tilt: 0, lean: 2,
+      trick: null, queued: null, grind: null, onRamp: null, charging: false, ghost: false,
+      hatOn: true, hatLift: 0, hatSpin: 0, board: { flip: 0, spin: 0, dy: 0 },
+      arms: 'relaxed', bailT: 0, bailRot: 0,
+    });
+    looseBoard.active = looseHat.active = false;
+    clearCombo();
+    popups.length = 0;
+    banner = null; score = 0; time = 0;
+    stats.bestCombo = 0; stats.bails = 0;
+    G.world.list.length = 0;
+    G.world.nextX = 760;
+  }
 
   // ---- Helpers
   function rampAt(x) {
@@ -71,6 +83,8 @@
     if (!combo.mult) return;
     const total = Math.round(combo.base) * combo.mult;
     score += total;
+    stats.bestCombo = Math.max(stats.bestCombo, total);
+    G.sfx('bank');
     banner = { text: '+' + G.fmt(total), sub: combo.mult > 1 ? combo.mult + '-trick combo!' : combo.names[0], t: 0 };
     clearCombo();
   }
@@ -82,6 +96,7 @@
     const def = TRICKS[key];
     hero.trick = { def, t: 0 };
     addToCombo(def.name, def.pts);
+    if (def.kind === 'hat') G.sfx('whistleUp');
   }
 
   function ollie(dir) {
@@ -92,6 +107,7 @@
     hero.state = 'air';
     hero.grind = null; hero.onRamp = null; hero.charging = false;
     G.emit('dust', hero.x - 8, hero.y, 3, 30);
+    G.sfx('ollie');
     if (dir) doTrick(dir);
   }
 
@@ -100,6 +116,7 @@
     hero.trick = null; hero.queued = null; resetPose();
     hero.state = 'grind'; hero.grind = o; hero.y = o.top; hero.vy = 0;
     addToCombo(GRINDS[o.kind], 100);
+    G.sfx('grind');
   }
 
   function land(sy) {
@@ -108,6 +125,7 @@
     hero.trick = null; hero.queued = null; resetPose();
     hero.state = 'ground'; hero.vy = 0; hero.crouch = 0.95;
     G.emit('dust', hero.x - 6, sy, 6, 60);
+    G.sfx('land');
     bankCombo();
   }
 
@@ -125,6 +143,8 @@
     Object.assign(looseHat, { active: true, x: hero.x + 5, y: hero.y - 72, vx: hero.speed * 0.4 + 30, vy: -650, rot: 0, vr: 9 });
     Object.assign(looseBoard, { active: true, returning: false, x: hero.x, y: hero.y, vx: hero.speed * 1.1 + 60, vy: -220, rot: 0, vr: 14 });
     G.shake = 7;
+    stats.bails++;
+    G.sfx('bail');
     if (o && o.kind === 'crate') G.emit('chip', hero.x + 12, o.top + 8, 9, 140);
     G.emit('dust', hero.x + 30, GR, 8, 80);
   }
@@ -212,6 +232,7 @@
         h.onRamp = r; h.y = GR - r.h * (h.x - r.x) / r.w; h.tilt = -Math.atan2(r.h, r.w);
       } else if (h.onRamp) {
         h.state = 'air'; h.vy = -(380 + h.speed * 1.6); h.onRamp = null;
+        G.sfx('ollie');
       } else {
         h.y = GR; h.tilt = G.lerp(h.tilt, 0, 0.3);
       }
@@ -315,6 +336,17 @@
       ctx.restore();
     }
 
+    if (G.clock) {
+      const left = Math.max(0, Math.ceil(G.clock.left));
+      plate(W - 112, 12, 100, 44);
+      ctx.textAlign = 'center'; ctx.fillStyle = G.PAPER;
+      ctx.font = '10px ' + G.BODY_FONT;
+      ctx.fillText('REEL ' + (G.clock.reel === 1 ? 'ONE' : 'TWO'), W - 62, 28);
+      ctx.font = G.NUM_FONT.replace('{s}', 20);
+      if (left <= 5 && left > 0) ctx.fillStyle = (Math.floor(time * 4) % 2) ? G.PAPER : G.MID;
+      ctx.fillText(Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'), W - 62, 49);
+    }
+
     if (time < 10) {
       ctx.globalAlpha = time < 8 ? 1 : 1 - (time - 8) / 2;
       const w = Math.min(W - 40, 430);
@@ -326,10 +358,9 @@
     }
   }
 
-  function render(t, dt) {
+  function draw(t, withHUD) {
     const heroSX = G.viewW * 0.3;
     const camX = hero.x - heroSX;
-    G.beginFrame(t);
     G.drawBackground(camX);
     G.drawObstacles(camX, t);
     G.drawParticles(camX);
@@ -337,17 +368,13 @@
     G.drawHero(hero, heroSX, t);
     if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
     G.drawForeground(camX);
-    drawHUD(heroSX);
-    G.endFrame(t, dt);
+    if (withHUD) drawHUD(heroSX);
+    return heroSX;
   }
 
-  let last = performance.now();
-  function frame(now) {
-    const dt = Math.min((now - last) / 1000, 1 / 30);
-    last = now;
-    update(dt);
-    render(now / 1000, dt);
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
+  // Safe to end a reel: not mid-air, mid-grind or mid-fall.
+  function settled() { return hero.state === 'ground'; }
+
+  G.play = { reset, update, draw, settled, bank: bankCombo };
+  reset();
 })();

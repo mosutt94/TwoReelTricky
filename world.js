@@ -142,7 +142,7 @@
   G.updateWorld = function (camX) {
     while (world.nextX < camX + G.viewW + 400) {
       const end = PATTERNS[(Math.random() * PATTERNS.length) | 0](world.nextX);
-      world.nextX = end + G.rand(280, 480);
+      world.nextX = end + (G.clock && G.clock.reel === 2 ? G.rand(220, 380) : G.rand(280, 480));
     }
     while (world.list.length && world.list[0].x + world.list[0].w < camX - 300) world.list.shift();
   };

@@ -16,7 +16,7 @@ window.G = (function () {
   // so a phone held upright gets a letterboxed "movie screen" in the middle.
   const MIN_W = 540, MAX_W = 760;
   function resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = G.dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = window.innerWidth, h = window.innerHeight;
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
@@ -52,6 +52,8 @@ window.G = (function () {
   function press(x, y) {
     input.down = true; input.consumed = false;
     input.sx = x; input.sy = y; input.t = performance.now();
+    input.fx = (x * G.dpr - G.offX) / G.scale;   // position inside the film frame
+    input.fy = (y * G.dpr - G.offY) / G.scale;
     G.handlers.press();
   }
   function release() {
