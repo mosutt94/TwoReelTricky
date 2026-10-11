@@ -75,6 +75,9 @@
       ctx.rotate(h.bailRot);   // falls flat like a plank, pivoting at the feet
     } else {
       ctx.rotate(h.tilt);
+      if (h.state === 'manual') {           // nose up, balanced on the back wheels
+        ctx.translate(-14, 0); ctx.rotate(-0.24); ctx.translate(14, 0);
+      }
       drawBoard(h.board.flip, h.board.spin, h.board.dy);
     }
 

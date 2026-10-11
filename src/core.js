@@ -44,14 +44,16 @@ window.G = (function () {
     ctx.closePath();
   };
 
-  // ---- Input: a tap is press + release; a quick drag is a swipe in one of four directions.
-  const input = { down: false, consumed: false, sx: 0, sy: 0, t: 0 };
+  // ---- Input. One finger does everything: holding (crouch / grind / manual), letting go (pop),
+  // quick flicks (swipes, which re-arm so you can flick again without lifting), and sliding
+  // side to side for balance. Keyboard: Space = hold, arrows = swipes and balance.
+  const input = { down: false, consumed: false, sx: 0, sy: 0, cx: 0, anchor: 0, t: 0, keyBal: 0 };
   G.input = input;
   G.handlers = { press() {}, release() {}, swipe() {} };
 
   function press(x, y) {
     input.down = true; input.consumed = false;
-    input.sx = x; input.sy = y; input.t = performance.now();
+    input.sx = input.cx = input.anchor = x; input.sy = y; input.t = performance.now();
     input.fx = (x * G.dpr - G.offX) / G.scale;   // position inside the film frame
     input.fy = (y * G.dpr - G.offY) / G.scale;
     G.handlers.press();
@@ -61,17 +63,18 @@ window.G = (function () {
     input.down = false;
     if (!input.consumed) G.handlers.release();
   }
-  function swipe(dir) {
-    input.consumed = true;
-    G.handlers.swipe(dir);
-  }
+  // How far the finger (or arrow keys) is leaning the hero, from -1 to 1.
+  G.balanceInput = () => input.keyBal || G.clamp((input.cx - input.anchor) / 45, -1, 1);
 
   window.addEventListener('pointerdown', (e) => { e.preventDefault(); press(e.clientX, e.clientY); }, { passive: false });
   window.addEventListener('pointermove', (e) => {
-    if (!input.down || input.consumed) return;
+    if (!input.down) return;
+    input.cx = e.clientX;
+    if (input.consumed) return;
     const dx = e.clientX - input.sx, dy = e.clientY - input.sy;
     if (dx * dx + dy * dy > 22 * 22) {
-      swipe(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+      input.sx = e.clientX; input.sy = e.clientY;
+      G.handlers.swipe(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
     }
   });
   window.addEventListener('pointerup', release);
@@ -82,9 +85,17 @@ window.G = (function () {
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
     if (e.code === 'Space') { e.preventDefault(); press(0, 0); }
-    else if (KEY_DIRS[e.code]) { e.preventDefault(); input.t = performance.now(); G.handlers.swipe(KEY_DIRS[e.code]); }
+    else if (KEY_DIRS[e.code]) {
+      e.preventDefault();
+      if (e.code === 'ArrowLeft') input.keyBal = -1;
+      if (e.code === 'ArrowRight') input.keyBal = 1;
+      G.handlers.swipe(KEY_DIRS[e.code]);
+    }
   });
-  window.addEventListener('keyup', (e) => { if (e.code === 'Space') release(); });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') release();
+    if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') input.keyBal = 0;
+  });
 
   // ---- Particles (world coordinates): dust puffs, grind sparks, crate splinters.
   const parts = [];

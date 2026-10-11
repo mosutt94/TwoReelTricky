@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 {
   sed '/<!-- SCRIPTS -->/,$d' src/page.html
   echo '<script>'
-  for f in core audio hero world play chase flow; do cat "src/$f.js"; echo; done
+  for f in core audio hero world skate hud chase flow; do cat "src/$f.js"; echo; done
   echo '</script>'
   sed '1,/<!-- SCRIPTS -->/d' src/page.html
 } > index.html

@@ -45,7 +45,7 @@
     for (let k = 0; k <= 10; k++) G.emit('dust', o.x - 10 + k * (o.w + 20) / 10, GR + G.rand(-12, 22), 3, 70);
     if (h.state === 'bail') return;
     const inWindow = Math.abs(h.x - (o.x + o.w / 2)) < o.w * 0.14;
-    if (inWindow && h.state === 'ground') {
+    if (inWindow && (h.state === 'ground' || h.state === 'manual')) {
       G.play.award(2500, 'STEAMBOAT SAVE!', 'Not a hair out of place.');
       cops.dist = Math.min(1, cops.dist + 0.25);
     } else {

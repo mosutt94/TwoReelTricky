@@ -121,64 +121,102 @@
     }
   };
 
-  // ---- Obstacles. Every top is grindable except kicker ramps; hitting the side means a bail,
-  // except the clothesline, which is high enough to ride under.
-  const world = G.world = { list: [], nextX: 760 };
-  function add(kind, x, w, h, variant) {
-    world.list.push({ kind, x, w, h, top: GR - h, variant });
+  // ---- Obstacles. Each stands on a base (the street, or the top of something else) and has a top.
+  // grind: he can lock onto its top edge; flat: he can ride on top of it; solid: running into
+  // its side is a bail.
+  G.KINDS = {
+    rail: { grind: true, solid: true },
+    line: { grind: true },
+    bench: { grind: true, flat: true, solid: true },
+    ledge: { grind: true, flat: true, solid: true },
+    crate: { grind: true, flat: true, solid: true },
+    pad: { grind: true, flat: true, solid: true },
+    dock: { grind: true, flat: true, solid: true },
+    trolley: { grind: true, flat: true, solid: true },
+    kicker: {},
+    facade: {},
+  };
+
+  const world = G.world = { list: [], nextX: 700, wantFacade: false, hints: 0 };
+  world.reset = function () {
+    world.list.length = 0; world.nextX = 700; world.wantFacade = false; world.hints = 0;
+  };
+  function add(kind, x, w, h, variant, base) {
+    base = base === undefined ? GR : base;
+    const o = { kind, x, w, h, base, top: base - h, variant };
+    // Label the first few rails and clotheslines so a new player knows to hold on.
+    if ((kind === 'rail' || kind === 'line') && world.hints < 4) { o.hint = true; world.hints++; }
+    world.list.push(o);
     return x + w;
   }
-  const PATTERNS = [
-    (x) => add('bench', x, 110, 26),
-    (x) => add('rail', x, G.rand(170, 250), 36),
-    (x) => add('ledge', x, G.rand(120, 170), 30),
-    (x) => add('crate', x, 30, 30, Math.random() < 0.5 ? 'crate' : 'barrel'),
-    (x) => add('line', add('kicker', x, 64, 30) + 50, G.rand(230, 300), 104),
-    (x) => add('crate', add('ledge', x, 130, 30) + 240, 30, 30, 'crate'),
-    (x) => add('bench', add('bench', x, 110, 26) + 210, 110, 26),
-    (x) => add('rail', add('crate', x, 30, 30, 'barrel') + 230, 200, 36),
-    (x) => add('kicker', x, 64, 30),
+
+  // Lines of obstacles spaced so that a pop off one lands on the next. Each returns where it ends.
+  const SECTIONS = [
+    (x) => { let e = add('bench', x, 110, 26); e = add('bench', e + 95, 110, 26); return add('bench', e + 95, 110, 26); },
+    (x) => add('rail', add('rail', x, 190, 40) + 115, 210, 40),
+    (x) => add('rail', add('ledge', x, 170, 30) + 105, 200, 48),
+    (x) => { let e = add('kicker', x, 64, 30); e = add('line', e + 50, 250, 104); return add('rail', e + 120, 220, 44); },
+    (x) => {                                   // loading dock with a crate and a rail on top, then a bench
+      const deck = GR - 44, e = add('dock', x, 400, 44);
+      add('crate', x + 110, 30, 30, 'crate', deck);
+      add('rail', x + 230, 130, 28, null, deck);
+      return add('bench', e + 110, 110, 26);
+    },
+    (x) => { let e = add('pad', x, 160, 14); e = add('pad', e + 120, 160, 14); return add('pad', e + 120, 160, 14); },
+    (x) => add('trolley', add('kicker', x, 64, 30) + 90, 380, 86),
+    (x) => add('kicker', x, 70, 34) + 240,     // big air with room to land: try a double or triple
+    (x) => { let e = add('crate', x, 30, 30, 'barrel'); e = add('ledge', e + 110, 150, 30); return add('crate', e + 110, 30, 30, 'crate'); },
+    (x) => add('bench', add('pad', x, 180, 14) + 100, 110, 26),
   ];
+  let lastSection = -1;
+
   G.updateWorld = function (camX) {
-    while (world.nextX < camX + G.viewW + 400) {
-      // A falling house gets the street to itself, with room to stand still in front of it.
-      const end = world.wantFacade
-        ? (world.wantFacade = false, add('facade', world.nextX + 260, 170, 200) + 380)
-        : PATTERNS[(Math.random() * PATTERNS.length) | 0](world.nextX);
-      world.nextX = end + (G.clock && G.clock.reel === 2 ? G.rand(220, 380) : G.rand(280, 480));
+    while (world.nextX < camX + G.viewW + 500) {
+      let end;
+      if (world.wantFacade) {                  // a falling house gets the street to itself
+        world.wantFacade = false;
+        end = add('facade', world.nextX + 260, 170, 200) + 380;
+      } else {
+        let i;
+        do { i = (Math.random() * SECTIONS.length) | 0; } while (i === lastSection);
+        lastSection = i;
+        end = SECTIONS[i](world.nextX);
+      }
+      world.nextX = end + (G.clock && G.clock.reel === 2 ? G.rand(200, 320) : G.rand(240, 380));
     }
     while (world.list.length && world.list[0].x + world.list[0].w < camX - 300) world.list.shift();
   };
 
   function drawObstacle(o, x, t) {
-    const top = o.top, w = o.w;
+    const top = o.top, w = o.w, base = o.base;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     if (o.kind === 'bench') {
       ctx.fillStyle = G.DARK;
       ctx.fillRect(x + 4, top - 18, w - 8, 4); ctx.fillRect(x + 4, top - 11, w - 8, 4);
       ctx.strokeStyle = G.INK; ctx.lineWidth = 3;
       for (const lx of [x + 10, x + w - 10]) {
-        ctx.beginPath(); ctx.moveTo(lx, top - 20); ctx.lineTo(lx, GR);
-        ctx.moveTo(lx - 6, GR); ctx.quadraticCurveTo(lx, top + 8, lx + 6, GR); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(lx, top - 20); ctx.lineTo(lx, base);
+        ctx.moveTo(lx - 6, base); ctx.quadraticCurveTo(lx, top + 8, lx + 6, base); ctx.stroke();
       }
       ctx.fillStyle = '#7d705a'; ctx.fillRect(x, top, w, 5);
       ctx.strokeStyle = G.INK; ctx.lineWidth = 1; ctx.strokeRect(x, top, w, 5);
     } else if (o.kind === 'rail') {
-      ctx.strokeStyle = G.INK;
-      ctx.lineWidth = 3;
-      for (let px = x + 6; px <= x + w - 6; px += Math.max(50, (w - 12) / Math.round((w - 12) / 60))) {
-        ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, GR); ctx.stroke();
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 3;
+      const n = Math.max(1, Math.round((w - 12) / 60));
+      for (let k = 0; k <= n; k++) {
+        const px = x + 6 + (w - 12) * k / n;
+        ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, base); ctx.stroke();
       }
-      ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, top + 16); ctx.lineTo(x + w, top + 16); ctx.stroke();
+      ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, top + o.h * 0.45); ctx.lineTo(x + w, top + o.h * 0.45); ctx.stroke();
       ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x + w, top); ctx.stroke();
       ctx.strokeStyle = G.MID; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 2, top - 1); ctx.lineTo(x + w - 2, top - 1); ctx.stroke();
     } else if (o.kind === 'ledge') {
       ctx.fillStyle = '#8b7c62'; ctx.fillRect(x, top + 4, w, o.h - 4);
       ctx.strokeStyle = 'rgba(23,19,13,0.45)'; ctx.lineWidth = 1;
-      for (let r = 0; r < 3; r++) {
+      for (let r = 0; r * 9 + 4 < o.h; r++) {
         const y = top + 4 + r * 9;
         ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.stroke();
-        for (let bx = x + (r % 2 ? 9 : 0); bx < x + w; bx += 18) { ctx.beginPath(); ctx.moveTo(bx, y); ctx.lineTo(bx, y + 9); ctx.stroke(); }
+        for (let bx = x + (r % 2 ? 9 : 0); bx < x + w; bx += 18) { ctx.beginPath(); ctx.moveTo(bx, y); ctx.lineTo(bx, Math.min(y + 9, base)); ctx.stroke(); }
       }
       ctx.fillStyle = G.LIGHT; ctx.fillRect(x - 3, top, w + 6, 5);
       ctx.strokeStyle = G.INK; ctx.strokeRect(x - 3, top, w + 6, 5);
@@ -194,13 +232,47 @@
         ctx.beginPath(); ctx.moveTo(x + 3, top + 3); ctx.lineTo(x + w - 3, top + o.h - 3);
         ctx.moveTo(x + w - 3, top + 3); ctx.lineTo(x + 3, top + o.h - 3); ctx.stroke();
       }
+    } else if (o.kind === 'pad') {             // stone curb, for manuals
+      ctx.fillStyle = '#b5ab92'; ctx.fillRect(x, top, w, o.h);
+      ctx.fillStyle = G.LIGHT; ctx.fillRect(x, top, w, 3);
+      ctx.strokeStyle = 'rgba(23,19,13,0.4)'; ctx.lineWidth = 1;
+      for (let jx = x + 40; jx < x + w; jx += 40) { ctx.beginPath(); ctx.moveTo(jx, top + 3); ctx.lineTo(jx, base); ctx.stroke(); }
+      ctx.strokeStyle = G.INK; ctx.strokeRect(x, top, w, o.h);
+    } else if (o.kind === 'dock') {            // wooden loading dock
+      ctx.fillStyle = '#7f725b'; ctx.fillRect(x, top + 5, w, o.h - 5);
+      ctx.strokeStyle = 'rgba(23,19,13,0.45)'; ctx.lineWidth = 1;
+      for (let bx = x + 14; bx < x + w; bx += 14) { ctx.beginPath(); ctx.moveTo(bx, top + 5); ctx.lineTo(bx, base); ctx.stroke(); }
+      ctx.fillStyle = G.INK;
+      ctx.fillRect(x + 6, top + 6, 6, o.h - 6); ctx.fillRect(x + w - 12, top + 6, 6, o.h - 6);
+      ctx.fillRect(x + w / 2 - 44, top + 13, 88, 16);
+      ctx.fillStyle = G.PAPER; ctx.font = '11px ' + G.BODY_FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('FREIGHT', x + w / 2, top + 21.5);
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = G.DARK; ctx.fillRect(x - 4, top, w + 8, 6);
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 1.2; ctx.strokeRect(x - 4, top, w + 8, 6);
+    } else if (o.kind === 'trolley') {         // a parked streetcar, roof and all
+      const bodyTop = top + 6, bodyBot = base - 16;
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x + w * 0.35, top); ctx.lineTo(x + w * 0.55, 60); ctx.stroke();
+      ctx.fillStyle = '#9b9077'; G.roundRect(x, bodyTop, w, bodyBot - bodyTop, 6); ctx.fill();
+      ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = G.SHADOW; G.roundRect(x + 6, top, w - 12, 8, 4); ctx.fill();
+      for (let wx = x + 18; wx < x + w - 30; wx += 34) {
+        ctx.fillStyle = G.SHADOW; ctx.fillRect(wx, bodyTop + 10, 24, 24);
+        ctx.fillStyle = 'rgba(239,230,208,0.25)'; ctx.fillRect(wx + 3, bodyTop + 12, 6, 20);
+      }
+      ctx.fillStyle = G.INK; ctx.fillRect(x, bodyTop + 40, w, 3);
+      ctx.fillStyle = G.PAPER; ctx.font = '10px ' + G.BODY_FONT; ctx.textAlign = 'center';
+      ctx.fillText('MAIN ST.  ·  CITY LINE', x + w / 2, bodyTop + 55);
+      ctx.fillStyle = G.INK; ctx.fillRect(x + 10, base - 18, w - 20, 4);
+      for (const wx of [x + 50, x + 90, x + w - 90, x + w - 50]) { ctx.beginPath(); ctx.arc(wx, base - 8, 8, 0, 7); ctx.fill(); }
     } else if (o.kind === 'kicker') {
       ctx.fillStyle = '#7d705a'; G.roundRect(x + w - 24, top + 4, 22, o.h - 4, 5); ctx.fill();
       ctx.strokeStyle = G.INK; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.lineWidth = 6; ctx.strokeStyle = G.INK;
-      ctx.beginPath(); ctx.moveTo(x, GR); ctx.lineTo(x + w, top); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, base); ctx.lineTo(x + w, top); ctx.stroke();
       ctx.lineWidth = 3; ctx.strokeStyle = '#9a8a6a';
-      ctx.beginPath(); ctx.moveTo(x + 2, GR - 1); ctx.lineTo(x + w - 1, top + 0.5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 2, base - 1); ctx.lineTo(x + w - 1, top + 0.5); ctx.stroke();
     } else if (o.kind === 'line') {
       ctx.strokeStyle = G.SHADOW; ctx.lineWidth = 4;
       for (const px of [x - 6, x + w + 6]) { ctx.beginPath(); ctx.moveTo(px, WALK); ctx.lineTo(px, top - 10); ctx.stroke(); }

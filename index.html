@@ -70,14 +70,16 @@ window.G = (function () {
     ctx.closePath();
   };
 
-  // ---- Input: a tap is press + release; a quick drag is a swipe in one of four directions.
-  const input = { down: false, consumed: false, sx: 0, sy: 0, t: 0 };
+  // ---- Input. One finger does everything: holding (crouch / grind / manual), letting go (pop),
+  // quick flicks (swipes, which re-arm so you can flick again without lifting), and sliding
+  // side to side for balance. Keyboard: Space = hold, arrows = swipes and balance.
+  const input = { down: false, consumed: false, sx: 0, sy: 0, cx: 0, anchor: 0, t: 0, keyBal: 0 };
   G.input = input;
   G.handlers = { press() {}, release() {}, swipe() {} };
 
   function press(x, y) {
     input.down = true; input.consumed = false;
-    input.sx = x; input.sy = y; input.t = performance.now();
+    input.sx = input.cx = input.anchor = x; input.sy = y; input.t = performance.now();
     input.fx = (x * G.dpr - G.offX) / G.scale;   // position inside the film frame
     input.fy = (y * G.dpr - G.offY) / G.scale;
     G.handlers.press();
@@ -87,17 +89,18 @@ window.G = (function () {
     input.down = false;
     if (!input.consumed) G.handlers.release();
   }
-  function swipe(dir) {
-    input.consumed = true;
-    G.handlers.swipe(dir);
-  }
+  // How far the finger (or arrow keys) is leaning the hero, from -1 to 1.
+  G.balanceInput = () => input.keyBal || G.clamp((input.cx - input.anchor) / 45, -1, 1);
 
   window.addEventListener('pointerdown', (e) => { e.preventDefault(); press(e.clientX, e.clientY); }, { passive: false });
   window.addEventListener('pointermove', (e) => {
-    if (!input.down || input.consumed) return;
+    if (!input.down) return;
+    input.cx = e.clientX;
+    if (input.consumed) return;
     const dx = e.clientX - input.sx, dy = e.clientY - input.sy;
     if (dx * dx + dy * dy > 22 * 22) {
-      swipe(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+      input.sx = e.clientX; input.sy = e.clientY;
+      G.handlers.swipe(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
     }
   });
   window.addEventListener('pointerup', release);
@@ -108,9 +111,17 @@ window.G = (function () {
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
     if (e.code === 'Space') { e.preventDefault(); press(0, 0); }
-    else if (KEY_DIRS[e.code]) { e.preventDefault(); input.t = performance.now(); G.handlers.swipe(KEY_DIRS[e.code]); }
+    else if (KEY_DIRS[e.code]) {
+      e.preventDefault();
+      if (e.code === 'ArrowLeft') input.keyBal = -1;
+      if (e.code === 'ArrowRight') input.keyBal = 1;
+      G.handlers.swipe(KEY_DIRS[e.code]);
+    }
   });
-  window.addEventListener('keyup', (e) => { if (e.code === 'Space') release(); });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') release();
+    if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') input.keyBal = 0;
+  });
 
   // ---- Particles (world coordinates): dust puffs, grind sparks, crate splinters.
   const parts = [];
@@ -479,6 +490,9 @@ window.G = (function () {
       ctx.rotate(h.bailRot);   // falls flat like a plank, pivoting at the feet
     } else {
       ctx.rotate(h.tilt);
+      if (h.state === 'manual') {           // nose up, balanced on the back wheels
+        ctx.translate(-14, 0); ctx.rotate(-0.24); ctx.translate(14, 0);
+      }
       drawBoard(h.board.flip, h.board.spin, h.board.dy);
     }
 
@@ -656,64 +670,102 @@ window.G = (function () {
     }
   };
 
-  // ---- Obstacles. Every top is grindable except kicker ramps; hitting the side means a bail,
-  // except the clothesline, which is high enough to ride under.
-  const world = G.world = { list: [], nextX: 760 };
-  function add(kind, x, w, h, variant) {
-    world.list.push({ kind, x, w, h, top: GR - h, variant });
+  // ---- Obstacles. Each stands on a base (the street, or the top of something else) and has a top.
+  // grind: he can lock onto its top edge; flat: he can ride on top of it; solid: running into
+  // its side is a bail.
+  G.KINDS = {
+    rail: { grind: true, solid: true },
+    line: { grind: true },
+    bench: { grind: true, flat: true, solid: true },
+    ledge: { grind: true, flat: true, solid: true },
+    crate: { grind: true, flat: true, solid: true },
+    pad: { grind: true, flat: true, solid: true },
+    dock: { grind: true, flat: true, solid: true },
+    trolley: { grind: true, flat: true, solid: true },
+    kicker: {},
+    facade: {},
+  };
+
+  const world = G.world = { list: [], nextX: 700, wantFacade: false, hints: 0 };
+  world.reset = function () {
+    world.list.length = 0; world.nextX = 700; world.wantFacade = false; world.hints = 0;
+  };
+  function add(kind, x, w, h, variant, base) {
+    base = base === undefined ? GR : base;
+    const o = { kind, x, w, h, base, top: base - h, variant };
+    // Label the first few rails and clotheslines so a new player knows to hold on.
+    if ((kind === 'rail' || kind === 'line') && world.hints < 4) { o.hint = true; world.hints++; }
+    world.list.push(o);
     return x + w;
   }
-  const PATTERNS = [
-    (x) => add('bench', x, 110, 26),
-    (x) => add('rail', x, G.rand(170, 250), 36),
-    (x) => add('ledge', x, G.rand(120, 170), 30),
-    (x) => add('crate', x, 30, 30, Math.random() < 0.5 ? 'crate' : 'barrel'),
-    (x) => add('line', add('kicker', x, 64, 30) + 50, G.rand(230, 300), 104),
-    (x) => add('crate', add('ledge', x, 130, 30) + 240, 30, 30, 'crate'),
-    (x) => add('bench', add('bench', x, 110, 26) + 210, 110, 26),
-    (x) => add('rail', add('crate', x, 30, 30, 'barrel') + 230, 200, 36),
-    (x) => add('kicker', x, 64, 30),
+
+  // Lines of obstacles spaced so that a pop off one lands on the next. Each returns where it ends.
+  const SECTIONS = [
+    (x) => { let e = add('bench', x, 110, 26); e = add('bench', e + 95, 110, 26); return add('bench', e + 95, 110, 26); },
+    (x) => add('rail', add('rail', x, 190, 40) + 115, 210, 40),
+    (x) => add('rail', add('ledge', x, 170, 30) + 105, 200, 48),
+    (x) => { let e = add('kicker', x, 64, 30); e = add('line', e + 50, 250, 104); return add('rail', e + 120, 220, 44); },
+    (x) => {                                   // loading dock with a crate and a rail on top, then a bench
+      const deck = GR - 44, e = add('dock', x, 400, 44);
+      add('crate', x + 110, 30, 30, 'crate', deck);
+      add('rail', x + 230, 130, 28, null, deck);
+      return add('bench', e + 110, 110, 26);
+    },
+    (x) => { let e = add('pad', x, 160, 14); e = add('pad', e + 120, 160, 14); return add('pad', e + 120, 160, 14); },
+    (x) => add('trolley', add('kicker', x, 64, 30) + 90, 380, 86),
+    (x) => add('kicker', x, 70, 34) + 240,     // big air with room to land: try a double or triple
+    (x) => { let e = add('crate', x, 30, 30, 'barrel'); e = add('ledge', e + 110, 150, 30); return add('crate', e + 110, 30, 30, 'crate'); },
+    (x) => add('bench', add('pad', x, 180, 14) + 100, 110, 26),
   ];
+  let lastSection = -1;
+
   G.updateWorld = function (camX) {
-    while (world.nextX < camX + G.viewW + 400) {
-      // A falling house gets the street to itself, with room to stand still in front of it.
-      const end = world.wantFacade
-        ? (world.wantFacade = false, add('facade', world.nextX + 260, 170, 200) + 380)
-        : PATTERNS[(Math.random() * PATTERNS.length) | 0](world.nextX);
-      world.nextX = end + (G.clock && G.clock.reel === 2 ? G.rand(220, 380) : G.rand(280, 480));
+    while (world.nextX < camX + G.viewW + 500) {
+      let end;
+      if (world.wantFacade) {                  // a falling house gets the street to itself
+        world.wantFacade = false;
+        end = add('facade', world.nextX + 260, 170, 200) + 380;
+      } else {
+        let i;
+        do { i = (Math.random() * SECTIONS.length) | 0; } while (i === lastSection);
+        lastSection = i;
+        end = SECTIONS[i](world.nextX);
+      }
+      world.nextX = end + (G.clock && G.clock.reel === 2 ? G.rand(200, 320) : G.rand(240, 380));
     }
     while (world.list.length && world.list[0].x + world.list[0].w < camX - 300) world.list.shift();
   };
 
   function drawObstacle(o, x, t) {
-    const top = o.top, w = o.w;
+    const top = o.top, w = o.w, base = o.base;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     if (o.kind === 'bench') {
       ctx.fillStyle = G.DARK;
       ctx.fillRect(x + 4, top - 18, w - 8, 4); ctx.fillRect(x + 4, top - 11, w - 8, 4);
       ctx.strokeStyle = G.INK; ctx.lineWidth = 3;
       for (const lx of [x + 10, x + w - 10]) {
-        ctx.beginPath(); ctx.moveTo(lx, top - 20); ctx.lineTo(lx, GR);
-        ctx.moveTo(lx - 6, GR); ctx.quadraticCurveTo(lx, top + 8, lx + 6, GR); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(lx, top - 20); ctx.lineTo(lx, base);
+        ctx.moveTo(lx - 6, base); ctx.quadraticCurveTo(lx, top + 8, lx + 6, base); ctx.stroke();
       }
       ctx.fillStyle = '#7d705a'; ctx.fillRect(x, top, w, 5);
       ctx.strokeStyle = G.INK; ctx.lineWidth = 1; ctx.strokeRect(x, top, w, 5);
     } else if (o.kind === 'rail') {
-      ctx.strokeStyle = G.INK;
-      ctx.lineWidth = 3;
-      for (let px = x + 6; px <= x + w - 6; px += Math.max(50, (w - 12) / Math.round((w - 12) / 60))) {
-        ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, GR); ctx.stroke();
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 3;
+      const n = Math.max(1, Math.round((w - 12) / 60));
+      for (let k = 0; k <= n; k++) {
+        const px = x + 6 + (w - 12) * k / n;
+        ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, base); ctx.stroke();
       }
-      ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, top + 16); ctx.lineTo(x + w, top + 16); ctx.stroke();
+      ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, top + o.h * 0.45); ctx.lineTo(x + w, top + o.h * 0.45); ctx.stroke();
       ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x + w, top); ctx.stroke();
       ctx.strokeStyle = G.MID; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 2, top - 1); ctx.lineTo(x + w - 2, top - 1); ctx.stroke();
     } else if (o.kind === 'ledge') {
       ctx.fillStyle = '#8b7c62'; ctx.fillRect(x, top + 4, w, o.h - 4);
       ctx.strokeStyle = 'rgba(23,19,13,0.45)'; ctx.lineWidth = 1;
-      for (let r = 0; r < 3; r++) {
+      for (let r = 0; r * 9 + 4 < o.h; r++) {
         const y = top + 4 + r * 9;
         ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.stroke();
-        for (let bx = x + (r % 2 ? 9 : 0); bx < x + w; bx += 18) { ctx.beginPath(); ctx.moveTo(bx, y); ctx.lineTo(bx, y + 9); ctx.stroke(); }
+        for (let bx = x + (r % 2 ? 9 : 0); bx < x + w; bx += 18) { ctx.beginPath(); ctx.moveTo(bx, y); ctx.lineTo(bx, Math.min(y + 9, base)); ctx.stroke(); }
       }
       ctx.fillStyle = G.LIGHT; ctx.fillRect(x - 3, top, w + 6, 5);
       ctx.strokeStyle = G.INK; ctx.strokeRect(x - 3, top, w + 6, 5);
@@ -729,13 +781,47 @@ window.G = (function () {
         ctx.beginPath(); ctx.moveTo(x + 3, top + 3); ctx.lineTo(x + w - 3, top + o.h - 3);
         ctx.moveTo(x + w - 3, top + 3); ctx.lineTo(x + 3, top + o.h - 3); ctx.stroke();
       }
+    } else if (o.kind === 'pad') {             // stone curb, for manuals
+      ctx.fillStyle = '#b5ab92'; ctx.fillRect(x, top, w, o.h);
+      ctx.fillStyle = G.LIGHT; ctx.fillRect(x, top, w, 3);
+      ctx.strokeStyle = 'rgba(23,19,13,0.4)'; ctx.lineWidth = 1;
+      for (let jx = x + 40; jx < x + w; jx += 40) { ctx.beginPath(); ctx.moveTo(jx, top + 3); ctx.lineTo(jx, base); ctx.stroke(); }
+      ctx.strokeStyle = G.INK; ctx.strokeRect(x, top, w, o.h);
+    } else if (o.kind === 'dock') {            // wooden loading dock
+      ctx.fillStyle = '#7f725b'; ctx.fillRect(x, top + 5, w, o.h - 5);
+      ctx.strokeStyle = 'rgba(23,19,13,0.45)'; ctx.lineWidth = 1;
+      for (let bx = x + 14; bx < x + w; bx += 14) { ctx.beginPath(); ctx.moveTo(bx, top + 5); ctx.lineTo(bx, base); ctx.stroke(); }
+      ctx.fillStyle = G.INK;
+      ctx.fillRect(x + 6, top + 6, 6, o.h - 6); ctx.fillRect(x + w - 12, top + 6, 6, o.h - 6);
+      ctx.fillRect(x + w / 2 - 44, top + 13, 88, 16);
+      ctx.fillStyle = G.PAPER; ctx.font = '11px ' + G.BODY_FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('FREIGHT', x + w / 2, top + 21.5);
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = G.DARK; ctx.fillRect(x - 4, top, w + 8, 6);
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 1.2; ctx.strokeRect(x - 4, top, w + 8, 6);
+    } else if (o.kind === 'trolley') {         // a parked streetcar, roof and all
+      const bodyTop = top + 6, bodyBot = base - 16;
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x + w * 0.35, top); ctx.lineTo(x + w * 0.55, 60); ctx.stroke();
+      ctx.fillStyle = '#9b9077'; G.roundRect(x, bodyTop, w, bodyBot - bodyTop, 6); ctx.fill();
+      ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = G.SHADOW; G.roundRect(x + 6, top, w - 12, 8, 4); ctx.fill();
+      for (let wx = x + 18; wx < x + w - 30; wx += 34) {
+        ctx.fillStyle = G.SHADOW; ctx.fillRect(wx, bodyTop + 10, 24, 24);
+        ctx.fillStyle = 'rgba(239,230,208,0.25)'; ctx.fillRect(wx + 3, bodyTop + 12, 6, 20);
+      }
+      ctx.fillStyle = G.INK; ctx.fillRect(x, bodyTop + 40, w, 3);
+      ctx.fillStyle = G.PAPER; ctx.font = '10px ' + G.BODY_FONT; ctx.textAlign = 'center';
+      ctx.fillText('MAIN ST.  ·  CITY LINE', x + w / 2, bodyTop + 55);
+      ctx.fillStyle = G.INK; ctx.fillRect(x + 10, base - 18, w - 20, 4);
+      for (const wx of [x + 50, x + 90, x + w - 90, x + w - 50]) { ctx.beginPath(); ctx.arc(wx, base - 8, 8, 0, 7); ctx.fill(); }
     } else if (o.kind === 'kicker') {
       ctx.fillStyle = '#7d705a'; G.roundRect(x + w - 24, top + 4, 22, o.h - 4, 5); ctx.fill();
       ctx.strokeStyle = G.INK; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.lineWidth = 6; ctx.strokeStyle = G.INK;
-      ctx.beginPath(); ctx.moveTo(x, GR); ctx.lineTo(x + w, top); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, base); ctx.lineTo(x + w, top); ctx.stroke();
       ctx.lineWidth = 3; ctx.strokeStyle = '#9a8a6a';
-      ctx.beginPath(); ctx.moveTo(x + 2, GR - 1); ctx.lineTo(x + w - 1, top + 0.5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 2, base - 1); ctx.lineTo(x + w - 1, top + 0.5); ctx.stroke();
     } else if (o.kind === 'line') {
       ctx.strokeStyle = G.SHADOW; ctx.lineWidth = 4;
       for (const px of [x - 6, x + w + 6]) { ctx.beginPath(); ctx.moveTo(px, WALK); ctx.lineTo(px, top - 10); ctx.stroke(); }
@@ -770,25 +856,30 @@ window.G = (function () {
   };
 })();
 
-// The rules: skating physics, tricks, grinds, combos, bails, and the intertitle-style score cards.
+// Skating rules. Hold to crouch, let go to ollie. Keep holding as you come down on a rail or
+// ledge to grind it, and let go to pop off. Swipe in the air to flip (swipe the same way again
+// for a double or triple), swipe up for the Hat Trick, or swipe up and hold to grab. Land while
+// holding to manual. Grinds and manuals need balance: slide the finger to keep the needle up.
 (function () {
-  const ctx = G.ctx, GR = G.GROUND;
-  const GRAVITY = 1800;
+  const GR = G.GROUND, GRAVITY = 1800;
+  const input = G.input;
 
-  const TRICKS = {
-    left: { name: 'Kickflip', pts: 100, dur: 0.42, kind: 'flip' },
-    right: { name: 'Heelflip', pts: 100, dur: 0.42, kind: 'flip' },
-    down: { name: '360 Shove-It', pts: 150, dur: 0.45, kind: 'spin' },
-    up: { name: 'Hat Trick', pts: 200, dur: 0.55, kind: 'hat' },
-    tap: { name: 'Stone Face Grab', pts: 120, dur: 0.4, kind: 'grab' },
+  const FLIPS = {
+    left: { names: ['Kickflip', 'Double Kickflip', 'Triple Kickflip'], pts: [100, 250, 500], kind: 'flip', sign: 1 },
+    right: { names: ['Heelflip', 'Double Heelflip', 'Triple Heelflip'], pts: [100, 250, 500], kind: 'flip', sign: -1 },
+    down: { names: ['Pop Shove-It', '360 Shove-It', '540 Shove-It'], pts: [120, 300, 600], kind: 'spin', sign: 1 },
   };
-  const GRINDS = { bench: 'Boardslide', rail: '50-50 Grind', ledge: '5-0 Grind', crate: 'Crate Slide', line: 'Clothesline Grind' };
-  const BAIL_LINES = ['Not a flicker of expression.', 'He meant to do that.', 'The hat, as ever, survives.',
-    'Dignity: temporarily misplaced.', 'A face of perfect calm.', 'The pavement wins this round.'];
+  const FIRST_SPIN = 0.34, EXTRA_SPIN = 0.26;
+  const GRINDS = {
+    rail: '50-50 Grind', bench: 'Boardslide', ledge: '5-0 Grind', crate: 'Crate Slide',
+    line: 'Tightrope Walk', pad: 'Curb Grind', dock: 'Dock Grind', trolley: 'Trolley Roof Grind',
+  };
+  const BAIL_LINES = ['Not a flicker of expression.', 'He meant to do that.', 'Dignity: temporarily misplaced.',
+    'A face of perfect calm.', 'The pavement wins this round.'];
 
   const hero = G.hero = {};
   const looseBoard = { active: false }, looseHat = { active: false };
-  const combo = { names: [], base: 0, mult: 0, counts: {} };
+  const combo = { names: [], entries: [], base: 0, mult: 0, counts: {} };
   const popups = [];
   const stats = G.stats = { bestCombo: 0, bails: 0 };
   let banner = null, score = 0, time = 0;
@@ -798,61 +889,80 @@ window.G = (function () {
   function reset() {
     Object.assign(hero, {
       x: 0, y: GR, vy: 0, state: 'ground', speed: 120, crouch: 0.1, tilt: 0, lean: 2,
-      trick: null, queued: null, grind: null, onRamp: null, charging: false, ghost: false,
+      support: null, onRamp: null, grind: null, ghost: false,
+      flip: null, queued: null, hat: null, grab: null, upPending: -1,
+      bal: 0, balV: 0, balT: 0,
       hatOn: true, hatLift: 0, hatSpin: 0, board: { flip: 0, spin: 0, dy: 0 },
-      arms: 'relaxed', bailT: 0, bailRot: 0,
+      arms: 'relaxed', bailT: 0, bailRot: 0, floor: GR, floorObj: null,
     });
     looseBoard.active = looseHat.active = false;
     clearCombo();
     popups.length = 0;
     banner = null; score = 0; time = 0;
     stats.bestCombo = 0; stats.bails = 0;
-    G.world.list.length = 0;
-    G.world.nextX = 760;
-    G.world.wantFacade = false;
+    G.world.reset();
     if (G.chase) G.chase.reset();
   }
 
-  // ---- Helpers
+  // ---- World queries
+  const kind = (o) => G.KINDS[o.kind] || {};
+  const list = () => G.world.list;
   function rampAt(x) {
-    for (const o of G.world.list) if (o.kind === 'kicker' && x >= o.x && x <= o.x + o.w) return o;
+    for (const o of list()) if (o.kind === 'kicker' && x >= o.x && x <= o.x + o.w) return o;
     return null;
   }
-  function surfaceAt(x) {
-    const r = rampAt(x);
-    return r ? GR - r.h * (x - r.x) / r.w : GR;
-  }
-  function overlapping(o, pad) { return hero.x + pad > o.x && hero.x - pad < o.x + o.w; }
+  function streetY(x) { const r = rampAt(x); return r ? GR - r.h * (x - r.x) / r.w : GR; }
+  const overlapping = (o, pad) => hero.x + pad > o.x && hero.x - pad < o.x + o.w;
   function hitSide() {
     if (hero.ghost) return null;
-    for (const o of G.world.list) {
-      if (o.kind === 'kicker' || o.kind === 'line' || o.kind === 'facade') continue;
-      if (overlapping(o, 7) && hero.y > o.top + 5) return o;
+    for (const o of list()) {
+      if (!kind(o).solid) continue;
+      if (overlapping(o, 7) && hero.y > o.top + 5 && hero.y <= o.base + 2) return o;
     }
     return null;
   }
-  function grindTarget(prevY) {
-    for (const o of G.world.list) {
-      if (o.kind === 'kicker' || o.kind === 'facade') continue;
-      if (hero.x >= o.x - 8 && hero.x <= o.x + o.w - 4 && prevY <= o.top + 3 && hero.y >= o.top) return o;
+  // The highest grindable or flat top he came down through this frame.
+  function landingTarget(prevY) {
+    let best = null;
+    for (const o of list()) {
+      const k = kind(o);
+      if (!k.grind && !k.flat) continue;
+      if (hero.x >= o.x - 6 && hero.x <= o.x + o.w && prevY <= o.top + 3 && hero.y >= o.top) {
+        if (!best || o.top < best.top) best = o;
+      }
     }
-    return null;
+    return best;
   }
-  function midTrick() { return hero.trick && hero.trick.t < hero.trick.def.dur - 0.09; }
-  function resetPose() {
-    hero.board.flip = hero.board.spin = hero.board.dy = 0;
-    hero.hatLift = hero.hatSpin = 0;
+  // What he lands on if he falls flat right here: the highest flat top under his feet, or the street.
+  function floorAt(x, y) {
+    let floor = GR, obj = null;
+    for (const o of list()) {
+      if (kind(o).flat && x >= o.x && x <= o.x + o.w && o.top >= y - 2 && o.top < floor) { floor = o.top; obj = o; }
+    }
+    return { floor, obj };
   }
 
   // ---- Combos
   function addToCombo(name, pts) {
     const n = (combo.counts[name] = (combo.counts[name] || 0) + 1);
-    combo.base += pts * Math.pow(0.5, n - 1);   // repeating a trick in one combo is worth less
-    combo.mult += 1;
+    const factor = Math.pow(0.5, n - 1);      // repeating a trick in one combo is worth less
+    combo.entries.push({ pts, factor });
     combo.names.push(name);
+    combo.base += pts * factor;
+    combo.mult += 1;
+    popups.push({ text: name, t: 0 });
+    return combo.names.length - 1;
+  }
+  function upgradeCombo(i, name, pts) {
+    const e = combo.entries[i];
+    combo.base += (pts - e.pts) * e.factor;
+    e.pts = pts;
+    combo.names[i] = name;
     popups.push({ text: name, t: 0 });
   }
-  function clearCombo() { combo.names = []; combo.base = 0; combo.mult = 0; combo.counts = {}; }
+  function clearCombo() {
+    combo.names = []; combo.entries = []; combo.base = 0; combo.mult = 0; combo.counts = {};
+  }
   function bankCombo() {
     if (!combo.mult) return;
     const total = Math.round(combo.base) * combo.mult;
@@ -864,56 +974,157 @@ window.G = (function () {
     clearCombo();
   }
 
-  // ---- Actions
-  function doTrick(key) {
-    if (hero.state !== 'air') return;
-    if (hero.trick) { hero.queued = key; return; }
-    const def = TRICKS[key];
-    hero.trick = { def, t: 0 };
-    addToCombo(def.name, def.pts);
-    if (def.kind === 'hat') G.sfx('whistleUp');
+  // ---- Tricks in the air
+  function resetBoard() { hero.board.flip = hero.board.spin = hero.board.dy = 0; }
+  function clearAir() {
+    hero.flip = null; hero.queued = null; hero.hat = null; hero.grab = null; hero.upPending = -1;
+    hero.hatLift = hero.hatSpin = 0;
+    resetBoard();
+  }
+  function startFlip(dir) {
+    const def = FLIPS[dir], f = hero.flip;
+    if (f && f.dir === dir && f.spins < 3) {           // same flick again: one more rotation
+      f.spins++;
+      f.dur += EXTRA_SPIN;
+      upgradeCombo(f.idx, def.names[f.spins - 1], def.pts[f.spins - 1]);
+      return;
+    }
+    if (f) { hero.queued = dir; return; }
+    hero.flip = { dir, kind: def.kind, sign: def.sign, spins: 1, t: 0, dur: FIRST_SPIN, idx: addToCombo(def.names[0], def.pts[0]) };
+  }
+  function startHat() {
+    if (hero.hat) return;
+    hero.hat = { t: 0, dur: 0.55 };
+    addToCombo('Hat Trick', 200);
+    G.sfx('whistleUp');
+  }
+  function startGrab() {
+    hero.grab = { t: 0 };
+    addToCombo('Porkpie Grab', 150);
+  }
+  function updateTricks(dt) {
+    const f = hero.flip;
+    if (f) {
+      f.t += dt;
+      const p = Math.min(1, f.t / f.dur), turn = p * f.spins * Math.PI * 2;
+      hero.board.flip = f.kind === 'flip' ? turn * f.sign : 0;
+      hero.board.spin = f.kind === 'spin' ? turn : 0;
+      hero.board.dy = Math.sin(p * Math.PI) * 7;
+      if (p >= 1) {
+        hero.flip = null; resetBoard();
+        if (hero.queued) { const q = hero.queued; hero.queued = null; startFlip(q); }
+      }
+    }
+    if (hero.hat) {
+      const h = hero.hat;
+      h.t += dt;
+      const p = Math.min(1, h.t / h.dur);
+      hero.hatLift = Math.sin(p * Math.PI) * 50;
+      hero.hatSpin = p * Math.PI * 4;
+      if (p >= 1) { hero.hat = null; hero.hatLift = hero.hatSpin = 0; }
+    }
+    // A flick up becomes a Hat Trick if the finger lifts, or a grab if it stays down.
+    if (hero.upPending >= 0 && (hero.upPending += dt) > 0.16) {
+      hero.upPending = -1;
+      if (input.down) startGrab(); else startHat();
+    }
+    if (hero.grab) {
+      hero.grab.t += dt;
+      combo.base += 260 * dt;
+      if (!input.down) hero.grab = null;
+    }
+  }
+  // Why a landing right now would go wrong, if it would.
+  function unsafe() {
+    if (hero.flip && hero.flip.t < hero.flip.dur - 0.07) return 'Landed mid-flip.';
+    if (hero.hat && hero.hat.t < hero.hat.dur - 0.1) return 'The hat was still up there.';
+    return null;
   }
 
-  function ollie(dir) {
-    if (hero.state === 'air') return doTrick(dir || 'tap');
-    if (hero.state !== 'ground' && hero.state !== 'grind') return;
-    const held = G.clamp((performance.now() - G.input.t) / 1000, 0, 0.3);
-    hero.vy = -(600 + (held / 0.3) * 200) - (hero.onRamp ? 250 : 0);
+  // ---- Moves
+  function pop() {
+    let v;
+    if (hero.state === 'ground') {
+      const held = G.clamp((performance.now() - input.t) / 1000, 0, 0.35);
+      v = 560 + (held / 0.35) * 260 + (hero.onRamp ? 250 : 0);
+    } else {
+      v = 620;                                   // popping off a rail or out of a manual
+    }
+    hero.vy = -v;
     hero.state = 'air';
-    hero.grind = null; hero.onRamp = null; hero.charging = false;
+    hero.grind = null; hero.support = null; hero.onRamp = null;
     G.emit('dust', hero.x - 8, hero.y, 3, 30);
     G.sfx('ollie');
-    if (dir) doTrick(dir);
   }
-
+  function startBalance() {
+    hero.bal = G.rand(-0.1, 0.1);
+    hero.balV = (Math.random() < 0.5 ? -1 : 1) * 0.25;
+    hero.balT = 0;
+    input.anchor = input.cx;
+  }
+  // Grinds and manuals tip over unless the finger leans the other way; longer is harder.
+  function balance(dt) {
+    hero.balT += dt;
+    const ctrl = G.balanceInput();
+    const tip = hero.bal * (1.2 + hero.balT * 0.5);
+    const wobble = Math.sin(time * 3.1 + hero.x * 0.013) * 0.25 * (0.5 + hero.balT * 0.15);
+    hero.balV += (tip + wobble - ctrl * 3.2) * dt;
+    hero.balV *= Math.pow(0.6, dt);
+    hero.bal += hero.balV * dt;
+    return Math.abs(hero.bal) < 1;
+  }
   function startGrind(o) {
-    if (midTrick()) { hero.y = o.top; return bail(o); }
-    hero.trick = null; hero.queued = null; resetPose();
-    hero.state = 'grind'; hero.grind = o; hero.y = o.top; hero.vy = 0;
-    addToCombo(GRINDS[o.kind], 100);
+    clearAir();
+    hero.state = 'grind'; hero.grind = o; hero.support = null;
+    hero.y = o.top; hero.vy = 0;
+    startBalance();
+    addToCombo(GRINDS[o.kind] || 'Grind', 100);
     G.sfx('grind');
   }
-
-  function land(sy) {
-    hero.y = sy;
-    if (midTrick()) return bail(null);
-    hero.trick = null; hero.queued = null; resetPose();
+  function startManual() {
+    clearAir();
+    hero.state = 'manual';
+    startBalance();
+    addToCombo('Manual', 50);
+  }
+  function land() {
+    clearAir();
     hero.state = 'ground'; hero.vy = 0; hero.crouch = 0.95;
-    G.emit('dust', hero.x - 6, sy, 6, 60);
+    G.emit('dust', hero.x - 6, hero.y, 6, 60);
     G.sfx('land');
     bankCombo();
   }
+  function touchDown(o, sy) {
+    const holding = input.down && !input.consumed;
+    const k = o ? kind(o) : null;
+    if (o && holding && k.grind) {
+      hero.y = o.top;
+      const bad = unsafe();
+      return bad ? bail(o, bad) : startGrind(o);
+    }
+    if (o && !k.flat) {
+      if (o.kind === 'line') return;               // a rope: without holding on, he drops right through
+      hero.y = o.top;
+      return bail(o, 'Should have held on to grind it.', 'RACKED!');
+    }
+    hero.y = o ? o.top : sy;
+    const bad = unsafe() || (hero.grab ? 'Let go of the grab too late.' : null);
+    if (bad) return bail(o, bad);
+    hero.support = o; hero.vy = 0;
+    if (holding) startManual(); else land();
+  }
 
-  function bail(o) {
+  function bail(o, why, title) {
     if (hero.state === 'bail') return;
+    const f = floorAt(hero.x + 30, hero.y);
+    hero.floor = f.floor; hero.floorObj = f.obj;
     hero.state = 'bail';
     hero.bailT = 0; hero.bailRot = 0;
-    hero.trick = null; hero.queued = null; hero.grind = null; hero.onRamp = null; hero.charging = false;
+    hero.grind = null; hero.onRamp = null; hero.support = null;
     hero.vy = Math.max(hero.vy, -100);
-    resetPose();
+    clearAir();
     clearCombo();
-    banner = { text: 'BAILED!', sub: BAIL_LINES[(Math.random() * BAIL_LINES.length) | 0], t: 0, bail: true };
-
+    banner = { text: title || 'BAILED!', sub: why || BAIL_LINES[(Math.random() * BAIL_LINES.length) | 0], t: 0, bail: true };
     hero.hatOn = false;
     Object.assign(looseHat, { active: true, x: hero.x + 5, y: hero.y - 72, vx: hero.speed * 0.4 + 30, vy: -650, rot: 0, vr: 9 });
     Object.assign(looseBoard, { active: true, returning: false, x: hero.x, y: hero.y, vx: hero.speed * 1.1 + 60, vy: -220, rot: 0, vr: 14 });
@@ -922,37 +1133,48 @@ window.G = (function () {
     G.sfx('bail');
     if (G.chase) G.chase.onBail();
     if (o && o.kind === 'crate') G.emit('chip', hero.x + 12, o.top + 8, 9, 140);
-    G.emit('dust', hero.x + 30, GR, 8, 80);
+    G.emit('dust', hero.x + 30, hero.floor, 8, 80);
   }
 
-  G.handlers.press = () => {
-    if (hero.state === 'ground' || hero.state === 'grind') hero.charging = true;
+  G.handlers.press = () => {};
+  G.handlers.release = () => {
+    if (hero.state === 'ground' || hero.state === 'manual' || hero.state === 'grind') pop();
+    else if (hero.state === 'air' && hero.upPending >= 0) { hero.upPending = -1; startHat(); }
   };
-  G.handlers.release = () => { hero.charging = false; ollie(null); };
-  G.handlers.swipe = (dir) => { hero.charging = false; ollie(dir); };
+  G.handlers.swipe = (dir) => {
+    if (hero.state === 'ground') { pop(); hero.vy -= 60; }      // flick from the ground: ollie straight into the trick
+    if (hero.state !== 'air') return;                         // on rails and manuals, sliding is for balance
+    if (dir === 'up') { if (!hero.hat && !hero.grab && hero.upPending < 0) hero.upPending = 0; }
+    else startFlip(dir);
+  };
 
   // ---- Simulation
-  function updateTrick(dt) {
-    const tk = hero.trick;
-    if (!tk) return;
-    tk.t += dt;
-    const p = Math.min(1, tk.t / tk.def.dur), kind = tk.def.kind;
-    hero.board.flip = kind === 'flip' ? p * Math.PI * 2 : 0;
-    hero.board.spin = kind === 'spin' ? p * Math.PI * 2 : 0;
-    hero.board.dy = kind === 'flip' || kind === 'spin' ? Math.sin(p * Math.PI) * 7 : 0;
-    hero.hatLift = kind === 'hat' ? Math.sin(p * Math.PI) * 44 : 0;
-    hero.hatSpin = kind === 'hat' ? p * Math.PI * 4 : 0;
-    if (p >= 1) {
-      hero.trick = null;
-      resetPose();
-      if (hero.queued) { const q = hero.queued; hero.queued = null; doTrick(q); }
+  function updateRolling(dt) {
+    const s = hero.support;
+    if (s) {
+      if (hero.x > s.x + s.w + 4) { hero.support = null; hero.state = 'air'; hero.vy = 0; return; }   // rolled off the end
+      hero.y = s.top;
+    } else {
+      const r = rampAt(hero.x);
+      if (r) {
+        hero.onRamp = r; hero.y = GR - r.h * (hero.x - r.x) / r.w;
+      } else if (hero.onRamp) {
+        hero.onRamp = null; hero.state = 'air'; hero.vy = -(420 + hero.speed * 1.5);
+        G.sfx('ollie');
+        return;
+      } else {
+        hero.y = GR;
+      }
     }
+    if (hero.ghost && !list().some((o) => kind(o).solid && overlapping(o, 16))) hero.ghost = false;
+    const o = hitSide();
+    if (o) bail(o, 'Ran smack into it.');
   }
 
   function updateBail(dt) {
-    const bt = (hero.bailT += dt);
+    const bt = (hero.bailT += dt), F = hero.floor;
     hero.speed = Math.max(0, hero.speed - 520 * dt);
-    if (hero.y < GR) { hero.vy += GRAVITY * dt; hero.y = Math.min(GR, hero.y + hero.vy * dt); }
+    if (hero.y < F) { hero.vy += GRAVITY * dt; hero.y = Math.min(F, hero.y + hero.vy * dt); }
 
     // Falls flat like a plank, bounces once, lies there, then springs back up.
     if (bt < 0.32) hero.bailRot = Math.pow(bt / 0.32, 2) * Math.PI / 2;
@@ -961,35 +1183,34 @@ window.G = (function () {
     else if (bt < 1.3) hero.bailRot = (Math.PI / 2) * (1 - (bt - 1.05) / 0.25);
     else hero.bailRot = 0;
 
-    // The board scoots off, then rolls back and flips itself under his feet.
-    const b = looseBoard;
+    const b = looseBoard;                 // the board scoots off, then rolls back under his feet
     if (bt < 1.0) {
       b.vx = Math.max(0, b.vx - 260 * dt);
       b.vy += GRAVITY * dt; b.x += b.vx * dt; b.y += b.vy * dt;
       if (b.y >= GR) { b.y = GR; b.vy = b.vy > 200 ? -b.vy * 0.3 : 0; b.vr *= 0.5; }
       b.rot = b.y >= GR ? G.lerp(b.rot % (Math.PI * 2), 0, 0.2) : b.rot + b.vr * dt;
     } else {
-      if (!b.returning) { b.returning = true; b.x0 = b.x; }
+      if (!b.returning) { b.returning = true; b.x0 = b.x; b.y0 = b.y; }
       const p = Math.min(1, (bt - 1.0) / 0.3);
       b.x = G.lerp(b.x0, hero.x, p);
-      b.y = GR - Math.sin(p * Math.PI) * 26;
+      b.y = G.lerp(b.y0, F, p) - Math.sin(p * Math.PI) * 26;
       b.rot = (1 - p) * -Math.PI * 2;
     }
 
-    // The hat sails up out of the picture and drops neatly back onto his head.
-    const hat = looseHat;
+    const hat = looseHat;                 // the hat sails out of the picture and drops back on his head
     if (bt < 0.75) {
       hat.vy += 900 * dt; hat.x += hat.vx * dt; hat.y += hat.vy * dt; hat.rot += hat.vr * dt;
       hat.fromX = hat.x; hat.fromY = hat.y;
     } else {
       const p = Math.min(1, (bt - 0.75) / 0.75);
       hat.x = G.lerp(hat.fromX, hero.x + G.HAT_SPOT.x, Math.min(1, p * 1.6));
-      hat.y = G.lerp(Math.min(hat.fromY, -30), GR + G.HAT_SPOT.y, p * p);
+      hat.y = G.lerp(Math.min(hat.fromY, -30), F + G.HAT_SPOT.y, p * p);
       hat.rot = G.lerp(hat.rot, -0.06, 0.15);
     }
 
     if (bt >= 1.55) {
-      hero.state = 'ground'; hero.y = GR; hero.vy = 0; hero.ghost = true;
+      hero.state = 'ground'; hero.y = F; hero.vy = 0; hero.ghost = true;
+      hero.support = hero.floorObj;
       hero.hatOn = true; looseHat.active = false; looseBoard.active = false;
     }
   }
@@ -1006,54 +1227,55 @@ window.G = (function () {
       G.chase.update(dt); G.updateParticles(dt); tickText(dt);
       return;
     }
-    const target = 250 + Math.min(time, 120) * 0.6;
+    const target = 250 + Math.min(time, 120) * 0.6 + (G.clock && G.clock.reel === 2 ? 20 : 0);
     if (h.state !== 'bail') h.speed = Math.min(target, h.speed + 260 * dt);
     h.x += h.speed * dt;
     G.updateWorld(h.x - G.viewW * 0.3);
 
-    if (h.state === 'ground') {
-      const r = rampAt(h.x);
-      if (r) {
-        h.onRamp = r; h.y = GR - r.h * (h.x - r.x) / r.w; h.tilt = -Math.atan2(r.h, r.w);
-      } else if (h.onRamp) {
-        h.state = 'air'; h.vy = -(380 + h.speed * 1.6); h.onRamp = null;
-        G.sfx('ollie');
-      } else {
-        h.y = GR; h.tilt = G.lerp(h.tilt, 0, 0.3);
+    if (h.state === 'ground' || h.state === 'manual') {
+      updateRolling(dt);
+      if (h.state === 'manual') {
+        combo.base += 120 * dt;
+        if (!balance(dt)) bail(null, 'Lost his balance.');
       }
-      if (h.ghost && !G.world.list.some((o) => overlapping(o, 16))) h.ghost = false;
-      if (h.state === 'ground') { const o = hitSide(); if (o) bail(o); }
     } else if (h.state === 'air') {
       const prevY = h.y;
       h.vy += GRAVITY * dt;
       h.y += h.vy * dt;
-      h.tilt = G.lerp(h.tilt, G.clamp(h.vy / 4000, -0.12, 0.18), 0.15);
-      updateTrick(dt);
-      if (h.vy > 0) { const o = grindTarget(prevY); if (o) startGrind(o); }
+      updateTricks(dt);
+      const o = h.vy > 0 ? landingTarget(prevY) : null;
+      if (o) touchDown(o);
       if (h.state === 'air') {
-        const sy = surfaceAt(h.x);
-        if (h.y >= sy) land(sy);
-        else { const o = hitSide(); if (o) bail(o); }
+        const sy = streetY(h.x);
+        if (h.y >= sy) touchDown(null, sy);
+        else { const hit = hitSide(); if (hit) bail(hit, 'Ran smack into it.'); }
       }
     } else if (h.state === 'grind') {
       const o = h.grind;
       h.y = o.top;
-      h.tilt = Math.sin(time * 11) * 0.05;
-      combo.base += 90 * dt;
+      combo.base += 150 * dt;
       if (o.kind !== 'line' && Math.random() < 0.7) G.emit('spark', h.x + G.rand(-14, 10), o.top, 1, 140);
-      if (h.x > o.x + o.w) { h.state = 'air'; h.vy = -160; h.grind = null; }
+      if (!balance(dt)) bail(o, 'Lost his balance.');
+      else if (h.x > o.x + o.w) { h.state = 'air'; h.vy = -60; h.grind = null; }   // ran off the end
     } else {
       updateBail(dt);
     }
 
-    // Pose: how low he crouches and what his arms are doing.
-    let crouch = 0.1, arms = 'relaxed';
-    if (h.state === 'ground') crouch = h.charging ? 1 : 0.1;
-    else if (h.state === 'air') {
-      crouch = h.trick ? 0.85 : 0.5;
-      arms = h.trick && h.trick.def.kind === 'grab' ? 'grab' : 'flail';
-    } else if (h.state === 'grind') { crouch = 0.35; arms = 'out'; }
-    else { crouch = 0.1; arms = h.bailT < 0.4 ? 'flail' : 'relaxed'; }
+    // Pose: tilt, crouch and arms.
+    let crouch = 0.1, arms = 'relaxed', tilt = 0;
+    if (h.state === 'ground') {
+      crouch = input.down ? 1 : 0.1;
+      if (h.onRamp) tilt = -Math.atan2(h.onRamp.h, h.onRamp.w);
+    } else if (h.state === 'air') {
+      crouch = h.flip ? 0.85 : 0.5;
+      arms = h.grab ? 'grab' : 'flail';
+      tilt = G.clamp(h.vy / 4000, -0.12, 0.18);
+    } else if (h.state === 'grind' || h.state === 'manual') {
+      crouch = 0.35; arms = 'out'; tilt = h.bal * 0.35;
+    } else {
+      arms = h.bailT < 0.4 ? 'flail' : 'relaxed';
+    }
+    h.tilt = G.lerp(h.tilt, tilt, Math.min(1, dt * 12));
     h.crouch = G.lerp(h.crouch, crouch, Math.min(1, dt * 14));
     h.arms = arms;
 
@@ -1062,7 +1284,55 @@ window.G = (function () {
     tickText(dt);
   }
 
-  // ---- Drawing
+  function draw(t, withHUD) {
+    const heroSX = G.viewW * 0.3;
+    const camX = hero.x - heroSX;
+    G.drawBackground(camX);
+    G.drawObstacles(camX, t);
+    G.drawParticles(camX);
+    G.chase.draw(camX, heroSX, t);
+    if (looseBoard.active) G.drawLooseBoard(looseBoard.x - camX, looseBoard.y, looseBoard.rot);
+    G.drawHero(hero, heroSX, t);
+    if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
+    G.chase.drawOver(camX, heroSX, t);
+    G.drawForeground(camX);
+    if (withHUD) G.drawHUD(heroSX, camX, t);
+    return heroSX;
+  }
+
+  // Banner cards for the set pieces. say() won't talk over another card unless forced.
+  function say(text, sub, force, isBail) {
+    if (banner && !force) return false;
+    banner = { text, sub, t: 0, bail: !!isBail };
+    return true;
+  }
+  function award(pts, text, sub) {
+    score += pts;
+    G.sfx('bank');
+    say(text, sub, true);
+  }
+
+  G.ui = { hero, combo, popups, get banner() { return banner; }, get score() { return score; }, get time() { return time; } };
+  G.play = {
+    reset, update, draw, say, award, bail,
+    settled: () => hero.state === 'ground',
+    bank: bankCombo,
+  };
+  reset();
+})();
+
+// On-screen cards: score, combo, reel clock, trick names, banners, the balance needle,
+// first-run tips, and "hold to grind" labels over the first few rails.
+(function () {
+  const ctx = G.ctx, GR = G.GROUND, ui = G.ui;
+  const TIPS = [
+    'HOLD to crouch  ·  LET GO to ollie',
+    'SWIPE in the air to flip  ·  swipe again for a double',
+    'Keep HOLDING as you land on a rail to grind  ·  LET GO to pop',
+    'Land while HOLDING to manual  ·  slide your finger to balance',
+    'Swipe UP for the Hat Trick  ·  swipe up and hold to grab',
+  ];
+
   function plate(x, y, w, h) {
     ctx.fillStyle = 'rgba(23,19,13,0.88)';
     G.roundRect(x, y, w, h, 4); ctx.fill();
@@ -1074,22 +1344,49 @@ window.G = (function () {
     ctx.fillStyle = G.PAPER; ctx.fillText(text, x, y);
   }
 
-  function drawHUD(heroSX) {
-    const W = G.viewW;
+  // A little gauge over his head: keep the needle out of the dark ends.
+  function balanceMeter(x, y, bal) {
+    const r = 24, span = Math.PI / 3;
+    ctx.lineCap = 'butt';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(23,19,13,0.75)';
+    ctx.beginPath(); ctx.arc(x, y, r, -Math.PI / 2 - span, -Math.PI / 2 + span); ctx.stroke();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = G.PAPER;
+    ctx.beginPath(); ctx.arc(x, y, r, -Math.PI / 2 - span * 0.7, -Math.PI / 2 + span * 0.7); ctx.stroke();
+    const a = -Math.PI / 2 + G.clamp(bal, -1, 1) * span;
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * (r + 5), y + Math.sin(a) * (r + 5)); ctx.stroke();
+    ctx.fillStyle = G.INK; ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill();
+  }
+
+  G.drawHUD = function (heroSX, camX, t) {
+    const W = G.viewW, h = ui.hero, combo = ui.combo, time = ui.time;
     ctx.textBaseline = 'alphabetic';
     ctx.lineJoin = 'round';
+
+    // "Hold to grind" over the first few rails and clotheslines of a run.
+    ctx.font = '11px ' + G.BODY_FONT; ctx.textAlign = 'center';
+    for (const o of G.world.list) {
+      if (!o.hint) continue;
+      const x = o.x - camX + Math.min(o.w / 2, 60);
+      if (x < -60 || x > W + 60) continue;
+      const y = o.top - 16 + Math.sin(t * 5) * 2;
+      plate(x - 46, y - 13, 92, 20);
+      ctx.fillStyle = G.PAPER; ctx.fillText('HOLD TO GRIND', x, y + 1);
+    }
 
     plate(12, 12, 132, 44);
     ctx.fillStyle = G.PAPER; ctx.textAlign = 'left';
     ctx.font = '10px ' + G.BODY_FONT; ctx.fillText('SCORE', 22, 28);
-    ctx.font = G.NUM_FONT.replace('{s}', 20); ctx.fillText(G.fmt(score), 22, 49);
+    ctx.font = G.NUM_FONT.replace('{s}', 20); ctx.fillText(G.fmt(ui.score), 22, 49);
 
     if (combo.mult) {
       let names = combo.names.slice(-3).join(' + ');
       if (combo.names.length > 3) names = '... + ' + names;
       ctx.font = '12px ' + G.BODY_FONT;
-      const w = Math.min(W - 180, Math.max(ctx.measureText(names).width, 90) + 28);
-      const cx = Math.max(W / 2, 156 + w / 2);
+      const w = Math.min(W - 280, Math.max(ctx.measureText(names).width, 90) + 28);
+      const cx = W / 2;
       plate(cx - w / 2, 12, w, 48);
       ctx.textAlign = 'center'; ctx.fillStyle = G.PAPER;
       ctx.fillText(names, cx, 30, w - 16);
@@ -1097,14 +1394,28 @@ window.G = (function () {
       ctx.fillText(G.fmt(combo.base) + '  x  ' + combo.mult, cx, 51);
     }
 
+    if (G.clock) {
+      const left = Math.max(0, Math.ceil(G.clock.left));
+      plate(W - 112, 12, 100, 44);
+      ctx.textAlign = 'center'; ctx.fillStyle = G.PAPER;
+      ctx.font = '10px ' + G.BODY_FONT;
+      ctx.fillText('REEL ' + (G.clock.reel === 1 ? 'ONE' : 'TWO'), W - 62, 28);
+      ctx.font = G.NUM_FONT.replace('{s}', 20);
+      if (left <= 5 && left > 0) ctx.fillStyle = (Math.floor(time * 4) % 2) ? G.PAPER : G.MID;
+      ctx.fillText(Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'), W - 62, 49);
+    }
+
+    if (h.state === 'grind' || h.state === 'manual') balanceMeter(heroSX + 4, h.y - 96, h.bal);
+
     ctx.textAlign = 'center';
     ctx.font = '14px ' + G.BODY_FONT;
-    popups.forEach((p, i) => {
+    ui.popups.forEach((p, i) => {
       ctx.globalAlpha = 1 - p.t / 0.9;
-      outlined(p.text, heroSX + 10, GR - 100 - p.t * 40 - (popups.length - 1 - i) * 16 + (hero.y - GR) * 0.6);
+      outlined(p.text, heroSX + 10, Math.min(h.y, GR) - 120 - p.t * 40 - (ui.popups.length - 1 - i) * 16);
     });
     ctx.globalAlpha = 1;
 
+    const banner = ui.banner;
     if (banner) {
       const a = banner.t < 1.2 ? 1 : 1 - (banner.t - 1.2) / 0.4;
       const s = 1 + Math.max(0, 0.2 - banner.t) * 2;
@@ -1121,61 +1432,17 @@ window.G = (function () {
       ctx.restore();
     }
 
-    if (G.clock) {
-      const left = Math.max(0, Math.ceil(G.clock.left));
-      plate(W - 112, 12, 100, 44);
-      ctx.textAlign = 'center'; ctx.fillStyle = G.PAPER;
-      ctx.font = '10px ' + G.BODY_FONT;
-      ctx.fillText('REEL ' + (G.clock.reel === 1 ? 'ONE' : 'TWO'), W - 62, 28);
-      ctx.font = G.NUM_FONT.replace('{s}', 20);
-      if (left <= 5 && left > 0) ctx.fillStyle = (Math.floor(time * 4) % 2) ? G.PAPER : G.MID;
-      ctx.fillText(Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'), W - 62, 49);
-    }
-
-    if (time < 10) {
-      ctx.globalAlpha = time < 8 ? 1 : 1 - (time - 8) / 2;
-      const w = Math.min(W - 40, 430);
-      plate(W / 2 - w / 2, G.VIEW_H - 50, w, 42);
-      ctx.fillStyle = G.PAPER; ctx.font = '12px ' + G.BODY_FONT;
-      ctx.fillText('TAP to ollie (hold for a bigger leap)', W / 2, G.VIEW_H - 32, w - 20);
-      ctx.fillText('SWIPE for tricks  ·  LAND on rails & benches to grind', W / 2, G.VIEW_H - 16, w - 20);
+    // How-to tips cycle through during the opening of the first reel.
+    if (time < 4.5 * TIPS.length && G.clock && G.clock.reel === 1) {
+      const i = Math.floor(time / 4.5), k = time - i * 4.5;
+      ctx.globalAlpha = Math.min(1, k * 4, (4.5 - k) * 4);
+      const w = Math.min(W - 24, 470);
+      plate(W / 2 - w / 2, G.VIEW_H - 44, w, 32);
+      ctx.fillStyle = G.PAPER; ctx.font = '13px ' + G.BODY_FONT;
+      ctx.fillText(TIPS[i], W / 2, G.VIEW_H - 23, w - 20);
       ctx.globalAlpha = 1;
     }
-  }
-
-  function draw(t, withHUD) {
-    const heroSX = G.viewW * 0.3;
-    const camX = hero.x - heroSX;
-    G.drawBackground(camX);
-    G.drawObstacles(camX, t);
-    G.drawParticles(camX);
-    G.chase.draw(camX, heroSX, t);
-    if (looseBoard.active) G.drawLooseBoard(looseBoard.x - camX, looseBoard.y, looseBoard.rot);
-    G.drawHero(hero, heroSX, t);
-    if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
-    G.chase.drawOver(camX, heroSX, t);
-    G.drawForeground(camX);
-    if (withHUD) drawHUD(heroSX);
-    return heroSX;
-  }
-
-  // Safe to end a reel: not mid-air, mid-grind or mid-fall.
-  function settled() { return hero.state === 'ground'; }
-
-  // Banner cards for the set pieces. say() won't talk over another card unless forced.
-  function say(text, sub, force, isBail) {
-    if (banner && !force) return false;
-    banner = { text, sub, t: 0, bail: !!isBail };
-    return true;
-  }
-  function award(pts, text, sub) {
-    score += pts;
-    G.sfx('bank');
-    say(text, sub, true);
-  }
-
-  G.play = { reset, update, draw, settled, bank: bankCombo, say, award, bail };
-  reset();
+  };
 })();
 
 // Slapstick set pieces: a squad of cops giving chase, and the house front that falls on our hero.
@@ -1225,7 +1492,7 @@ window.G = (function () {
     for (let k = 0; k <= 10; k++) G.emit('dust', o.x - 10 + k * (o.w + 20) / 10, GR + G.rand(-12, 22), 3, 70);
     if (h.state === 'bail') return;
     const inWindow = Math.abs(h.x - (o.x + o.w / 2)) < o.w * 0.14;
-    if (inWindow && h.state === 'ground') {
+    if (inWindow && (h.state === 'ground' || h.state === 'manual')) {
       G.play.award(2500, 'STEAMBOAT SAVE!', 'Not a hair out of place.');
       cops.dist = Math.min(1, cops.dist + 0.25);
     } else {
