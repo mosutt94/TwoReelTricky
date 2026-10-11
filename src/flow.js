@@ -168,6 +168,8 @@
     if (blink(t)) text('TAP TO ROLL FILM', x + cw / 2, y + 210, '15px ' + G.BODY_FONT);
     G.hero.push = (t % 2.6) < 0.6 ? (t % 2.6) / 0.6 : -1;
     G.drawHero(G.hero, w * 0.3, t);
+    ctx.textAlign = 'left'; ctx.font = '10px ' + G.BODY_FONT; ctx.fillStyle = 'rgba(239,230,208,0.6)';
+    ctx.fillText('PRINT No. ' + (window.TRT_PRINT || '?'), 14, H - 12);
     if (best > 0) {
       ctx.fillStyle = 'rgba(23,19,13,0.85)';
       G.roundRect(w / 2 - 80, H - 40, 160, 26, 4); ctx.fill();
