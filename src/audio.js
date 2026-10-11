@@ -1,65 +1,87 @@
-// Sound: Scott Joplin's "The Entertainer" (1902, public domain) on a warm synthesized piano
-// with a little picture-house echo, soft projector clatter, and slapstick sound effects.
-// Everything is generated with Web Audio from the note data below; nothing is downloaded.
+// Sound: Scott Joplin's "The Entertainer" (1902, public domain) on a synthesized upright piano
+// in a small picture house, soft projector clatter, and slapstick sound effects. Everything is
+// generated with Web Audio from the note data below; nothing is downloaded.
 (function () {
   let ac = null, master = null, musicBus = null, sfxBus = null, noiseBuf = null;
   let muted = false;
   try { muted = localStorage.getItem('trt-muted') === '1'; } catch (e) { /* storage unavailable */ }
 
-  // Stride left hand: bass note on each beat, chord on each off-beat.
-  const CH = {
-    C: { root: 48, alt: 43, tones: [52, 55, 60] },
-    G7: { root: 43, alt: 50, tones: [53, 59, 62] },
-    D7: { root: 50, alt: 45, tones: [54, 60, 62] },
-  };
-  // Each bar of 2/4 is eight sixteenth-note steps: [[first-half chord, second-half chord], melody, 'solo'?].
-  // Melody values are MIDI notes; 0 is a rest and _ holds the previous note (across bars too).
+  // ---- The tune. 2/4 time, eight sixteenth-note steps per bar. Each bar is
+  // [[first-half chord, second-half chord], melody, flag]. Melody values are MIDI notes;
+  // 0 is a rest and _ holds the previous note (across bar lines too). Flags: 'solo' plays the
+  // right hand in octaves with no left hand (the introduction); 'oct' doubles the melody an
+  // octave below, as Joplin asks on repeats.
   const _ = -1;
-  const PHRASE_1 = [['C', 'C'], [76, 84, _, 76, 84, _, 76, 84]];          // E C' . E C' . E C'
-  const PHRASE_2 = [['C', 'C'], [_, _, _, _, 0, 84, 86, 87]];             // ...held, then C' D' D#'
-  const PHRASE_3 = [['C', 'G7'], [88, 84, 86, 88, _, 83, 86, _]];         // E' C' D' E' . B D' .
-  const SONG = [
-    // Introduction, in octaves without the left hand.
-    [['G7', 'G7'], [86, 88, 84, 81, _, 83, 79, _], 'solo'],
-    [['G7', 'G7'], [74, 76, 72, 69, _, 71, 67, _], 'solo'],
-    [['C', 'C'], [72, _, _, _, 0, 0, 74, 75]],
-    // The A strain.
-    PHRASE_1, PHRASE_2, PHRASE_3,
-    [['C', 'C'], [84, _, _, _, 0, 0, 74, 75]],
-    PHRASE_1,
-    [['C', 'D7'], [_, _, _, _, 0, 81, 79, 78]],                          // ...held, then A G F#
-    [['D7', 'D7'], [81, 84, 88, 86, _, 84, 81, 86]],                     // A C' E' D' . C' A D'
+  const CH = {   // stride left hand: bass note, alternate bass, chord, and the chord's pitch classes
+    C: { root: 36, alt: 43, tones: [52, 55, 60], pcs: [0, 4, 7] },
+    G7: { root: 31, alt: 38, tones: [53, 59, 62], pcs: [7, 11, 2, 5] },
+    D7: { root: 38, alt: 45, tones: [54, 60, 62], pcs: [2, 6, 9, 0] },
+  };
+  const A_STRAIN = [
+    [['C', 'C'], [76, 84, _, 76, 84, _, 76, 84]],      // E C' . E C' . E C'
+    [['C', 'C'], [_, _, _, _, _, 84, 86, 87]],         // (held) C' D' D#'
+    [['C', 'G7'], [88, 84, 86, 88, _, 83, 86, 84]],    // E' C' D' E' . B D' C'
+    [['C', 'C'], [_, _, _, _, 0, 0, 74, 75]],          // (held) . . D D#
+    [['C', 'C'], [76, 84, _, 76, 84, _, 76, 84]],
+    [['C', 'C'], [_, _, _, _, _, 81, 79, 78]],         // (held) A G F#
+    [['D7', 'D7'], [81, 84, 88, 86, _, 84, 81, 86]],   // A C' E' D' . C' A D'
     [['G7', 'G7'], [_, _, _, _, 0, 0, 74, 75]],
-    PHRASE_1, PHRASE_2, PHRASE_3,
-    [['C', 'C'], [84, _, _, _, 0, 84, 86, 88]],
-    [['C', 'C'], [84, 86, 88, 84, 86, 88, 84, 86]],                      // the tumbling C' D' E' run
-    [['C', 'C'], [84, 88, 84, 86, 88, 84, 86, 84]],
-    PHRASE_3,
-    [['C', 'C'], [84, _, _, _, 0, 0, 0, 0]],
+    [['C', 'C'], [76, 84, _, 76, 84, _, 76, 84]],
+    [['C', 'C'], [_, _, _, _, _, 84, 86, 87]],
+    [['C', 'G7'], [88, 84, 86, 88, _, 83, 86, 84]],
+    [['C', 'C'], [_, _, _, _, 0, 0, 74, 75]],
+    [['C', 'C'], [76, 84, _, _, _, 84, 86, 88]],       // E C' (held) C' D' E'
+    [['C', 'C'], [84, 86, 88, 84, 86, 88, 84, 86]],    // the tumbling figure, three notes against two
+    [['C', 'G7'], [88, 84, 86, 88, _, 83, 86, 84]],
+    [['C', 'C'], [_, _, _, _, 0, 0, 74, 75]],
   ];
+  const INTRO = [
+    [['C', 'C'], [74, 76, 72, 69, _, 71, 67, _], 'solo'],   // D E C A . B G, in octaves,
+    [['C', 'C'], [62, 64, 60, 57, _, 59, 55, _], 'solo'],   // falling an octave each time
+    [['C', 'C'], [50, 52, 48, 45, _, 47, 43, _], 'solo'],
+    [['C', 'C'], [43, _, _, _, 0, 0, 74, 75], 'solo'],
+  ];
+  const SONG = INTRO.concat(A_STRAIN, A_STRAIN.map((b) => [b[0], b[1], 'oct']));
+  const LOOP_FROM = INTRO.length;   // after the first time through, the introduction is not repeated
+  const LOOP_LEN = SONG.length - LOOP_FROM;
 
-  let bpm = 150, step = 0, nextTime = 0, timer = null, clatterOn = false;
+  let bpm = 84, step = 0, nextTime = 0, timer = null, clatterOn = false;
   const freq = (m) => 440 * Math.pow(2, (m - 69) / 12);
+  const stepDur = () => 60 / bpm / 4;
 
-  // A struck string: a quick bright attack that settles and darkens as it rings.
+  // An upright piano note: a hammer click, then a few slightly stretched partials, the higher
+  // ones dying away first. Bass notes ring longer than treble.
   function piano(m, t, dur, vol) {
     const f = freq(m);
-    const g = ac.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
-    g.gain.exponentialRampToValueAtTime(vol * 0.4, t + 0.14);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    const tone = ac.createBiquadFilter();
-    tone.type = 'lowpass';
-    tone.frequency.setValueAtTime(Math.min(3200, f * 5), t);
-    tone.frequency.exponentialRampToValueAtTime(Math.max(250, f * 1.4), t + dur);
-    tone.connect(g); g.connect(musicBus);
-    [[f, 'triangle', 0.9], [f * 1.0012, 'sine', 0.5], [f * 2, 'sine', 0.1]].forEach(([fr, type, lvl]) => {
-      const o = ac.createOscillator(), og = ac.createGain();
-      o.type = type; o.frequency.value = fr; og.gain.value = lvl;
-      o.connect(og); og.connect(tone);
-      o.start(t); o.stop(t + dur + 0.05);
+    const ring = Math.min(dur, f < 200 ? 2.4 : f < 600 ? 1.6 : 0.9);
+    const partials = f > 900 ? [[1, 1], [2.004, 0.18]]
+      : f > 350 ? [[1, 1], [2.004, 0.35], [3.012, 0.12]]
+        : [[1, 1], [2.004, 0.5], [3.012, 0.25], [4.03, 0.1]];
+    const out = ac.createGain();
+    out.gain.value = vol;
+    out.connect(musicBus);
+    partials.forEach(([ratio, lvl], i) => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'sine'; o.frequency.value = f * ratio;
+      if (i === 0) o.detune.value = 3;
+      const tail = ring / (1 + i * 0.9);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(lvl, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(lvl * 0.35, t + 0.09 + tail * 0.15);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + tail);
+      o.connect(g); g.connect(out);
+      o.start(t); o.stop(t + tail + 0.02);
     });
+    if (f < 900) {                                   // a second, slightly detuned string
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'sine'; o.frequency.value = f; o.detune.value = -4;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.6, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + ring);
+      o.connect(g); g.connect(out);
+      o.start(t); o.stop(t + ring + 0.02);
+    }
+    noise(t, 0.018, vol * 0.9, 'bandpass', 2600, 1.2, musicBus);   // the hammer
   }
 
   function noise(t, dur, vol, type, f, q, bus) {
@@ -74,33 +96,68 @@
     src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.02);
   }
 
-  const melodyAt = (i) => SONG[Math.floor(i / 8) % SONG.length][1][i % 8];
+  function bar(i) {
+    const n = Math.floor(i / 8);
+    return n < SONG.length ? SONG[n] : SONG[LOOP_FROM + (n - LOOP_FROM) % LOOP_LEN];
+  }
+  const melodyAt = (i) => bar(i)[1][i % 8];
+
+  // A chord tone a third or a sixth below the melody, for the long notes.
+  function harmonyBelow(m, chord) {
+    for (const gap of [4, 3, 9, 8]) if (chord.pcs.includes(((m - gap) % 12 + 12) % 12)) return m - gap;
+    return null;
+  }
+
   function scheduleStep(i, t) {
-    const bar = SONG[Math.floor(i / 8) % SONG.length], s = i % 8;
-    const chord = CH[bar[0][s < 4 ? 0 : 1]];
-    const stepDur = 60 / bpm / 2, solo = bar[2] === 'solo';
-    if (!solo && s % 4 === 0) piano(s === 0 ? chord.root : chord.alt, t, 0.6, 0.15);   // oom
-    if (!solo && s % 4 === 2) chord.tones.forEach((m) => piano(m, t, 0.35, 0.045));     // pah
-    const m = bar[1][s];
+    const b = bar(i), s = i % 8, flag = b[2];
+    const chord = CH[b[0][s < 4 ? 0 : 1]];
+    const solo = flag === 'solo';
+    if (!solo && s % 4 === 0) piano(s === 0 ? chord.root : chord.alt, t, 1.2, 0.13);      // oom
+    if (!solo && s % 4 === 2) chord.tones.forEach((m) => piano(m, t, 0.3, 0.032));         // pah
+    const m = b[1][s];
     if (m > 0) {
       let len = 1;
       while (len < 16 && melodyAt(i + len) === _) len++;
-      const dur = Math.max(0.3, len * stepDur * 1.4);
-      piano(m, t, dur, s === 0 ? 0.12 : 0.1);
-      if (solo) piano(m - 12, t, dur, 0.09);
+      const dur = Math.max(0.35, len * stepDur() * 1.3);
+      const vol = s === 0 ? 0.17 : 0.14;
+      piano(m, t, dur, vol);
+      if (solo) piano(m - 12, t, dur, vol * 0.8);
+      else if (flag === 'oct') piano(m - 12, t, dur, vol * 0.55);
+      else if (len >= 3) { const h = harmonyBelow(m, chord); if (h) piano(h, t, dur, vol * 0.5); }
     }
   }
 
+  // Schedules well ahead so a busy frame can't make the music stumble, and if the page was
+  // throttled it skips forward rather than playing the missed notes in a heap.
   function scheduler() {
-    while (nextTime < ac.currentTime + 0.15) {
+    const now = ac.currentTime;
+    if (nextTime < now - 0.05) nextTime = now + 0.05;
+    while (nextTime < now + 0.6) {
       scheduleStep(step, nextTime);
-      if (clatterOn) for (let k = 0; k < 3; k++) noise(nextTime + k * (60 / bpm / 6), 0.01, 0.012, 'bandpass', 1100, 1.5, musicBus);
-      nextTime += 60 / bpm / 2;
+      if (clatterOn) for (let k = 0; k < 2; k++) noise(nextTime + k * stepDur() / 2, 0.01, 0.01, 'bandpass', 1100, 1.5, musicBus);
+      nextTime += stepDur();
       step++;
     }
   }
 
-  const A = G.audio = {
+  // A short, dark room: a decaying burst of noise as the impulse response.
+  function makeRoom() {
+    const len = Math.floor(ac.sampleRate * 1.3), ir = ac.createBuffer(2, len, ac.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch);
+      let lp = 0;
+      for (let i = 0; i < len; i++) {
+        const env = Math.pow(1 - i / len, 2.6);
+        lp += 0.18 * ((Math.random() * 2 - 1) - lp);      // dull the tail
+        d[i] = lp * env;
+      }
+    }
+    const conv = ac.createConvolver();
+    conv.buffer = ir;
+    return conv;
+  }
+
+  G.audio = {
     get muted() { return muted; },
     start() {
       if (!ac) {
@@ -108,21 +165,19 @@
         if (!Ctx) return;
         ac = new Ctx();
         master = ac.createGain(); master.gain.value = muted ? 0 : 0.9;
-        const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200;
-        master.connect(lp); lp.connect(ac.destination);
-        musicBus = ac.createGain(); musicBus.gain.value = 0.4; musicBus.connect(master);
-        // A soft echo, like a piano in a small picture house.
-        const echo = ac.createDelay(1), fb = ac.createGain(), wet = ac.createGain(), dark = ac.createBiquadFilter();
-        echo.delayTime.value = 0.13; fb.gain.value = 0.28; wet.gain.value = 0.22;
-        dark.type = 'lowpass'; dark.frequency.value = 1600;
-        musicBus.connect(echo); echo.connect(dark); dark.connect(fb); fb.connect(echo); dark.connect(wet); wet.connect(master);
-        sfxBus = ac.createGain(); sfxBus.gain.value = 0.8; sfxBus.connect(master);
+        const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4200;
+        const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 70;
+        master.connect(lp); lp.connect(hp); hp.connect(ac.destination);
         noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
         const d = noiseBuf.getChannelData(0);
         for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+        musicBus = ac.createGain(); musicBus.gain.value = 0.5; musicBus.connect(master);
+        const room = makeRoom(), wet = ac.createGain(); wet.gain.value = 0.3;
+        musicBus.connect(room); room.connect(wet); wet.connect(master);
+        sfxBus = ac.createGain(); sfxBus.gain.value = 0.8; sfxBus.connect(master);
       }
       if (ac.state === 'suspended') ac.resume();
-      if (!timer) { nextTime = ac.currentTime + 0.05; timer = setInterval(scheduler, 30); }
+      if (!timer) { nextTime = ac.currentTime + 0.1; timer = setInterval(scheduler, 100); }
     },
     setTempo(b) { bpm = b; },
     setClatter(on) { clatterOn = on; },
@@ -135,7 +190,7 @@
 
   document.addEventListener('visibilitychange', () => {
     if (!ac) return;
-    if (document.hidden) ac.suspend(); else { ac.resume(); nextTime = ac.currentTime + 0.05; }
+    if (document.hidden) ac.suspend(); else { ac.resume(); nextTime = ac.currentTime + 0.1; }
   });
 
   G.sfx = function (name) {
@@ -161,7 +216,7 @@
       G.sfx('whistleDown');
       noise(t + 0.3, 0.25, 0.9, 'lowpass', 300, 1);
     } else if (name === 'bank') {
-      [72, 76, 79, 84].forEach((m, i) => piano(m, t + i * 0.06, 0.5, 0.12));
+      [72, 76, 79, 84].forEach((m, i) => piano(m, t + i * 0.06, 0.6, 0.14));
     } else if (name === 'whistle') {          // police whistle: a shrill warbling trill
       const o = ac.createOscillator(), lfo = ac.createOscillator(), depth = ac.createGain(), g = ac.createGain();
       o.type = 'sine'; o.frequency.value = 2100;

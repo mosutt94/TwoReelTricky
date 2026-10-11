@@ -24,13 +24,13 @@
   function startRun() {
     play.reset();
     G.clock = null; newBest = false; lastCount = 0; nabbed = false;
-    G.audio.setTempo(150);
+    G.audio.setTempo(84);
     go('leader');
   }
   function showCard(r) { reel = r; go('card'); }
   function beginReel() {
     G.clock = { reel, left: REEL_SECONDS, facades: FACADES[reel].slice(), pipes: PIPES[reel].slice() };
-    G.audio.setTempo(reel === 1 ? 150 : 166);
+    G.audio.setTempo(reel === 1 ? 84 : 92);
     G.audio.setClatter(true);
     go('play');
   }
@@ -41,7 +41,7 @@
       try { localStorage.setItem('trt-best', String(best)); } catch (e) { /* ignore */ }
     }
     G.audio.setClatter(false);
-    G.audio.setTempo(138);
+    G.audio.setTempo(76);
     go('end');
   }
 
