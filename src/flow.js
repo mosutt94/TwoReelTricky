@@ -193,10 +193,11 @@
     ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
     ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, 120, 0, 7); ctx.stroke();
     ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, 104, 0, 7); ctx.stroke();
-    ctx.font = G.NUM_FONT.replace('{s}', 130); ctx.fillStyle = G.INK;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(String(n), cx, cy + 4);
-    ctx.textBaseline = 'alphabetic';
+    // A heavy plain numeral, as on a real leader, centred on its measured ink rather than its font box.
+    ctx.font = 'bold 150px "Helvetica Neue", Helvetica, Arial, sans-serif'; ctx.fillStyle = G.INK;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    const m = ctx.measureText(String(n));
+    ctx.fillText(String(n), cx, cy + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2);
   }
 
   function drawCard() {
