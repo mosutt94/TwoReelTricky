@@ -1,0 +1,13 @@
+#!/bin/sh
+# Bundles the game into one self-contained index.html, so a phone's cache can never
+# serve a mix of old and new files after an update. Run this before every commit.
+set -e
+cd "$(dirname "$0")"
+{
+  sed '/<!-- SCRIPTS -->/,$d' src/page.html
+  echo '<script>'
+  for f in core audio hero world play chase flow; do cat "src/$f.js"; echo; done
+  echo '</script>'
+  sed '1,/<!-- SCRIPTS -->/d' src/page.html
+} > index.html
+echo "Built index.html ($(wc -c < index.html) bytes)"

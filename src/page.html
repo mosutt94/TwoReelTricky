@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b0a08">
+<title>Two Reel Tricky</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=Limelight&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0a08; overflow: hidden; }
+  body { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; }
+  #jammed { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 24px; background: #17130d; color: #efe6d0; font-family: "IM Fell English SC", Georgia, serif; text-align: center; }
+  #jammed[hidden] { display: none; }
+  #jammed b { font-family: Limelight, Georgia, serif; font-weight: normal; font-size: 32px; }
+  #jammed small { color: #a39880; font-family: Georgia, serif; font-size: 12px; max-width: 32em; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="jammed" hidden><b>The projector jammed!</b><span>Tap anywhere to start the picture again.</span><small></small></div>
+<!-- SCRIPTS -->
+</body>
+</html>

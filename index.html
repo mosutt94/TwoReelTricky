@@ -13,16 +13,1653 @@
   html, body { margin: 0; height: 100%; background: #0b0a08; overflow: hidden; }
   body { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
   canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; }
+  #jammed { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 24px; background: #17130d; color: #efe6d0; font-family: "IM Fell English SC", Georgia, serif; text-align: center; }
+  #jammed[hidden] { display: none; }
+  #jammed b { font-family: Limelight, Georgia, serif; font-weight: normal; font-size: 32px; }
+  #jammed small { color: #a39880; font-family: Georgia, serif; font-size: 12px; max-width: 32em; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
-<script src="core.js"></script>
-<script src="audio.js"></script>
-<script src="hero.js"></script>
-<script src="world.js"></script>
-<script src="play.js"></script>
-<script src="chase.js"></script>
-<script src="flow.js"></script>
+<div id="jammed" hidden><b>The projector jammed!</b><span>Tap anywhere to start the picture again.</span><small></small></div>
+<script>
+// Shared setup: the film-frame canvas, tap/swipe input, particles and the old-film overlay.
+window.G = (function () {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const G = {
+    canvas, ctx,
+    VIEW_H: 360, GROUND: 300,
+    INK: '#17130d', PAPER: '#efe6d0', LIGHT: '#d8cdb3', MID: '#a39880', DARK: '#665c4b', SHADOW: '#3b352b',
+    TITLE_FONT: 'Limelight, Georgia, serif',
+    BODY_FONT: '"IM Fell English SC", Georgia, serif',
+    NUM_FONT: '700 {s}px "Playfair Display", Georgia, serif',
+    shake: 0,
+  };
+
+  // The picture is a fixed-height film frame; its width follows the screen within limits,
+  // so a phone held upright gets a letterboxed "movie screen" in the middle.
+  const MIN_W = 540, MAX_W = 760;
+  function resize() {
+    const dpr = G.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = window.innerWidth, h = window.innerHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    G.scale = Math.min(canvas.height / G.VIEW_H, canvas.width / MIN_W);
+    G.viewW = Math.min(canvas.width / G.scale, MAX_W);
+    G.offX = (canvas.width - G.viewW * G.scale) / 2;
+    G.offY = (canvas.height - G.VIEW_H * G.scale) / 2;
+    G.portrait = h > w * 1.1;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  G.clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  G.lerp = (a, b, t) => a + (b - a) * t;
+  G.rand = (a, b) => a + Math.random() * (b - a);
+  G.fmt = (n) => Math.round(n).toLocaleString('en-US');
+
+  G.roundRect = function (x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  };
+
+  // ---- Input: a tap is press + release; a quick drag is a swipe in one of four directions.
+  const input = { down: false, consumed: false, sx: 0, sy: 0, t: 0 };
+  G.input = input;
+  G.handlers = { press() {}, release() {}, swipe() {} };
+
+  function press(x, y) {
+    input.down = true; input.consumed = false;
+    input.sx = x; input.sy = y; input.t = performance.now();
+    input.fx = (x * G.dpr - G.offX) / G.scale;   // position inside the film frame
+    input.fy = (y * G.dpr - G.offY) / G.scale;
+    G.handlers.press();
+  }
+  function release() {
+    if (!input.down) return;
+    input.down = false;
+    if (!input.consumed) G.handlers.release();
+  }
+  function swipe(dir) {
+    input.consumed = true;
+    G.handlers.swipe(dir);
+  }
+
+  window.addEventListener('pointerdown', (e) => { e.preventDefault(); press(e.clientX, e.clientY); }, { passive: false });
+  window.addEventListener('pointermove', (e) => {
+    if (!input.down || input.consumed) return;
+    const dx = e.clientX - input.sx, dy = e.clientY - input.sy;
+    if (dx * dx + dy * dy > 22 * 22) {
+      swipe(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+    }
+  });
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+  window.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+
+  const KEY_DIRS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    if (e.code === 'Space') { e.preventDefault(); press(0, 0); }
+    else if (KEY_DIRS[e.code]) { e.preventDefault(); input.t = performance.now(); G.handlers.swipe(KEY_DIRS[e.code]); }
+  });
+  window.addEventListener('keyup', (e) => { if (e.code === 'Space') release(); });
+
+  // ---- Particles (world coordinates): dust puffs, grind sparks, crate splinters.
+  const parts = [];
+  G.emit = function (kind, x, y, n, spread) {
+    for (let i = 0; i < n; i++) {
+      parts.push({
+        kind, x, y,
+        vx: G.rand(-1, 1) * spread,
+        vy: kind === 'spark' ? G.rand(-170, -50) : kind === 'chip' ? G.rand(-320, -120) : G.rand(-35, -5),
+        life: 0,
+        max: kind === 'spark' ? G.rand(0.15, 0.35) : G.rand(0.45, 0.9),
+        r: G.rand(3, 7), rot: G.rand(0, 6), vr: G.rand(-10, 10),
+      });
+    }
+  };
+  G.updateParticles = function (dt) {
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      p.life += dt;
+      if (p.life > p.max) { parts.splice(i, 1); continue; }
+      if (p.kind !== 'dust') p.vy += 900 * dt;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+    }
+  };
+  G.drawParticles = function (camX) {
+    for (const p of parts) {
+      const k = 1 - p.life / p.max, x = p.x - camX;
+      if (p.kind === 'dust') {
+        ctx.fillStyle = 'rgba(163,152,128,' + (0.55 * k) + ')';
+        ctx.beginPath(); ctx.arc(x, p.y, p.r * (1.6 - k), 0, 7); ctx.fill();
+      } else if (p.kind === 'spark') {
+        ctx.strokeStyle = 'rgba(255,252,240,' + k + ')';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(x, p.y); ctx.lineTo(x - p.vx * 0.03, p.y - p.vy * 0.03); ctx.stroke();
+      } else {
+        ctx.save(); ctx.translate(x, p.y); ctx.rotate(p.rot);
+        ctx.fillStyle = G.DARK; ctx.fillRect(-4, -1.5, 8, 3);
+        ctx.restore();
+      }
+    }
+  };
+
+  // ---- Old-film look: grain, flicker, scratches, dust specks, vignette and a weaving gate.
+  const grain = [];
+  for (let k = 0; k < 4; k++) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    const img = g.createImageData(128, 128);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = Math.random() < 0.5 ? 0 : 255;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = Math.random() < 0.55 ? 0 : 18 + Math.random() * 40;
+    }
+    g.putImageData(img, 0, 0);
+    grain.push(ctx.createPattern(c, 'repeat'));
+  }
+  const scratches = [];
+
+  G.beginFrame = function (t) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#0b0a08';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const wx = Math.sin(t * 1.7) * 0.4 + (Math.random() - 0.5) * 0.5 + (Math.random() - 0.5) * G.shake;
+    const wy = Math.sin(t * 2.3) * 0.3 + (Math.random() - 0.5) * 0.5 + (Math.random() - 0.5) * G.shake;
+    ctx.setTransform(G.scale, 0, 0, G.scale, G.offX + wx * G.scale, G.offY + wy * G.scale);
+    ctx.save();
+    G.roundRect(0, 0, G.viewW, G.VIEW_H, 12);
+    ctx.clip();
+  };
+
+  G.endFrame = function (t, dt) {
+    const W = G.viewW, H = G.VIEW_H;
+    G.shake = Math.max(0, G.shake - dt * 30);
+
+    ctx.save();
+    ctx.translate(-Math.random() * 128, -Math.random() * 128);
+    ctx.fillStyle = grain[(Math.random() * grain.length) | 0];
+    ctx.fillRect(0, 0, W + 256, H + 256);
+    ctx.restore();
+
+    ctx.fillStyle = Math.random() < 0.5
+      ? 'rgba(20,14,6,' + Math.random() * 0.07 + ')'
+      : 'rgba(255,248,230,' + Math.random() * 0.05 + ')';
+    ctx.fillRect(0, 0, W, H);
+
+    if (Math.random() < 0.03) scratches.push({ x: Math.random() * W, life: G.rand(0.1, 0.7), dark: Math.random() < 0.6 });
+    for (let i = scratches.length - 1; i >= 0; i--) {
+      const s = scratches[i];
+      s.life -= dt;
+      if (s.life <= 0) { scratches.splice(i, 1); continue; }
+      s.x += G.rand(-1.5, 1.5);
+      ctx.strokeStyle = s.dark ? 'rgba(20,14,6,0.35)' : 'rgba(255,250,235,0.45)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(s.x, 0); ctx.lineTo(s.x + G.rand(-2, 2), H); ctx.stroke();
+    }
+    if (Math.random() < 0.2) {
+      ctx.fillStyle = Math.random() < 0.6 ? 'rgba(20,14,6,0.6)' : 'rgba(255,250,235,0.7)';
+      ctx.beginPath(); ctx.arc(Math.random() * W, Math.random() * H, G.rand(0.5, 2.2), 0, 7); ctx.fill();
+    }
+
+    const v = ctx.createRadialGradient(W / 2, H / 2, H * 0.32, W / 2, H / 2, W * 0.72);
+    v.addColorStop(0, 'rgba(10,8,4,0)');
+    v.addColorStop(1, 'rgba(10,8,4,0.7)');
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+
+    if (G.portrait) {
+      ctx.setTransform(G.scale, 0, 0, G.scale, G.offX, G.offY);
+      ctx.fillStyle = 'rgba(239,230,208,0.7)';
+      ctx.font = '15px ' + G.BODY_FONT;
+      ctx.textAlign = 'center';
+      ctx.fillText('Turn your phone sideways for the big picture', G.viewW / 2, H + 34);
+    }
+  };
+
+  return G;
+})();
+
+// Sound: a honky-tonk ragtime loop played by a synthesized "tack piano", projector clatter,
+// and slapstick sound effects. Everything is generated with Web Audio; nothing to download.
+(function () {
+  let ac = null, master = null, musicBus = null, sfxBus = null, noiseBuf = null;
+  let muted = false;
+  try { muted = localStorage.getItem('trt-muted') === '1'; } catch (e) { /* storage unavailable */ }
+
+  // C major stride piano. Each bar: two half-bar chords and an 8-step melody (MIDI note, 0 = rest, -1 = hold).
+  const CH = {
+    C: { root: 48, alt: 43, tones: [52, 55, 60] },
+    G7: { root: 43, alt: 50, tones: [53, 59, 62] },
+    F: { root: 41, alt: 48, tones: [57, 60, 65] },
+    A7: { root: 45, alt: 52, tones: [55, 61, 64] },
+    D7: { root: 50, alt: 45, tones: [54, 60, 62] },
+  };
+  const _ = -1;
+  const SONG = [
+    [['C', 'C'], [76, _, _, 79, _, _, 76, 72]],
+    [['C', 'C'], [81, _, 79, 76, _, 72, 74, 76]],
+    [['G7', 'G7'], [77, _, _, 74, _, _, 71, 74]],
+    [['G7', 'G7'], [79, _, 77, 76, 74, _, 71, 67]],
+    [['C', 'C'], [72, _, 76, 79, _, 84, _, _]],
+    [['F', 'F'], [81, _, _, 77, _, _, 81, 84]],
+    [['C', 'A7'], [79, _, 76, 72, 73, 76, 79, 81]],
+    [['D7', 'D7'], [78, _, _, 81, _, _, 78, 74]],
+    [['G7', 'G7'], [79, _, _, 77, _, _, 74, 71]],
+    [['C', 'C'], [72, _, _, 67, 72, _, 0, 0]],
+  ];
+
+  let bpm = 100, step = 0, nextTime = 0, timer = null, clatterOn = false;
+  const freq = (m) => 440 * Math.pow(2, (m - 69) / 12);
+
+  function piano(m, t, dur, vol) {
+    const f = freq(m);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    g.connect(musicBus);
+    // Two slightly detuned strings plus a bright overtone: the out-of-tune saloon-piano sound.
+    [[f, 'triangle', 1], [f * 1.006, 'triangle', 0.7], [f * 2, 'sine', 0.25]].forEach(([fr, type, lvl]) => {
+      const o = ac.createOscillator(), og = ac.createGain();
+      o.type = type; o.frequency.value = fr; og.gain.value = lvl;
+      o.connect(og); og.connect(g);
+      o.start(t); o.stop(t + dur + 0.05);
+    });
+  }
+
+  function noise(t, dur, vol, type, f, q, bus) {
+    const src = ac.createBufferSource();
+    src.buffer = noiseBuf;
+    const filt = ac.createBiquadFilter();
+    filt.type = type; filt.frequency.value = f; filt.Q.value = q || 1;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(filt); filt.connect(g); g.connect(bus || sfxBus);
+    src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.02);
+  }
+
+  function scheduleStep(i, t) {
+    const bar = SONG[Math.floor(i / 8) % SONG.length], s = i % 8;
+    const chord = CH[bar[0][s < 4 ? 0 : 1]];
+    const stepDur = 60 / bpm / 2;
+    if (s % 4 === 0) piano(s === 0 ? chord.root : chord.alt, t, 0.5, 0.2);   // oom
+    if (s % 4 === 2) chord.tones.forEach((m) => piano(m, t, 0.3, 0.07));               // pah
+    let m = bar[1][s];
+    if (m > 0) {
+      let len = 1;
+      while (s + len < 8 && bar[1][s + len] === _) len++;
+      piano(m, t, Math.max(0.25, len * stepDur * 1.3), 0.13);
+    }
+  }
+
+  function scheduler() {
+    while (nextTime < ac.currentTime + 0.15) {
+      scheduleStep(step, nextTime);
+      if (clatterOn) for (let k = 0; k < 3; k++) noise(nextTime + k * (60 / bpm / 6), 0.012, 0.03, 'bandpass', 2400, 2, musicBus);
+      nextTime += 60 / bpm / 2;
+      step++;
+    }
+  }
+
+  const A = G.audio = {
+    get muted() { return muted; },
+    start() {
+      if (!ac) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        ac = new Ctx();
+        master = ac.createGain(); master.gain.value = muted ? 0 : 0.9;
+        const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3800;
+        master.connect(lp); lp.connect(ac.destination);
+        musicBus = ac.createGain(); musicBus.gain.value = 0.55; musicBus.connect(master);
+        sfxBus = ac.createGain(); sfxBus.gain.value = 0.8; sfxBus.connect(master);
+        noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+        const d = noiseBuf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      }
+      if (ac.state === 'suspended') ac.resume();
+      if (!timer) { nextTime = ac.currentTime + 0.05; timer = setInterval(scheduler, 30); }
+    },
+    setTempo(b) { bpm = b; },
+    setClatter(on) { clatterOn = on; },
+    toggleMute() {
+      muted = !muted;
+      try { localStorage.setItem('trt-muted', muted ? '1' : '0'); } catch (e) { /* ignore */ }
+      if (master) master.gain.setTargetAtTime(muted ? 0 : 0.9, ac.currentTime, 0.05);
+    },
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ac) return;
+    if (document.hidden) ac.suspend(); else { ac.resume(); nextTime = ac.currentTime + 0.05; }
+  });
+
+  G.sfx = function (name) {
+    if (!ac || muted) return;
+    const t = ac.currentTime;
+    if (name === 'ollie') {
+      noise(t, 0.05, 0.6, 'bandpass', 1800, 3);
+    } else if (name === 'land') {
+      noise(t, 0.12, 0.7, 'lowpass', 500, 1);
+    } else if (name === 'grind') {
+      noise(t, 0.25, 0.25, 'highpass', 4000, 1);
+    } else if (name === 'whistleUp' || name === 'whistleDown') {
+      const o = ac.createOscillator(), g = ac.createGain();
+      const up = name === 'whistleUp';
+      o.type = 'sine';
+      o.frequency.setValueAtTime(up ? 500 : 1500, t);
+      o.frequency.exponentialRampToValueAtTime(up ? 1500 : 260, t + (up ? 0.35 : 0.6));
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.22, t + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + (up ? 0.4 : 0.7));
+      o.connect(g); g.connect(sfxBus); o.start(t); o.stop(t + 0.75);
+    } else if (name === 'bail') {
+      G.sfx('whistleDown');
+      noise(t + 0.3, 0.25, 0.9, 'lowpass', 300, 1);
+    } else if (name === 'bank') {
+      [72, 76, 79, 84].forEach((m, i) => piano(m, t + i * 0.06, 0.5, 0.12));
+    } else if (name === 'whistle') {          // police whistle: a shrill warbling trill
+      const o = ac.createOscillator(), lfo = ac.createOscillator(), depth = ac.createGain(), g = ac.createGain();
+      o.type = 'square'; o.frequency.value = 2600;
+      lfo.frequency.value = 28; depth.gain.value = 180;
+      lfo.connect(depth); depth.connect(o.frequency);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.06, t + 0.02);
+      g.gain.setValueAtTime(0.06, t + 0.5);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+      o.connect(g); g.connect(sfxBus);
+      o.start(t); lfo.start(t); o.stop(t + 0.75); lfo.stop(t + 0.75);
+    } else if (name === 'creak') {            // timber groaning before the house goes over
+      const o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(90, t); o.frequency.linearRampToValueAtTime(55, t + 0.9);
+      f.type = 'lowpass'; f.frequency.value = 600;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.1);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 1.0);
+      o.connect(f); f.connect(g); g.connect(sfxBus);
+      o.start(t); o.stop(t + 1.05);
+    } else if (name === 'crash') {
+      noise(t, 0.9, 1.0, 'lowpass', 250, 1);
+      noise(t + 0.02, 0.5, 0.5, 'bandpass', 1200, 0.8);
+      for (let k = 1; k < 6; k++) noise(t + k * 0.07, 0.08, 0.4, 'bandpass', 2000 + k * 300, 3);
+    } else if (name === 'tick') {
+      noise(t, 0.03, 0.4, 'bandpass', 3000, 4);
+    }
+  };
+})();
+
+// The hero: a stone-faced fellow in a flat porkpie hat, built from simple shapes so he can be posed.
+(function () {
+  const ctx = G.ctx;
+
+  // Flat porkpie: wide flat brim, low crown with a telescoped top and a ribbon band.
+  G.drawHat = function (x, y, rot) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot || 0);
+    ctx.fillStyle = G.INK;
+    ctx.beginPath(); ctx.ellipse(0, 0, 12.5, 1.9, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2b251c';
+    ctx.fillRect(-6.5, -6.2, 13, 6.2);
+    ctx.fillStyle = G.INK;
+    ctx.fillRect(-6.5, -2.6, 13, 1.9);
+    ctx.fillStyle = G.MID;
+    ctx.fillRect(-5, -6.2, 10, 0.9);
+    ctx.restore();
+  };
+
+  // Board in local space: deck centre at y = -6, wheels touching y = 0.
+  // flip = kickflip angle (spins about its long axis), spin = shove-it angle (about the vertical).
+  function drawBoard(flip, spin, dy) {
+    ctx.save();
+    ctx.translate(0, -6 + (dy || 0));
+    const sy = Math.cos(flip || 0), sx = Math.cos(spin || 0);
+    ctx.scale(Math.abs(sx) < 0.05 ? 0.05 : sx, Math.abs(sy) < 0.08 ? 0.08 : sy);
+    ctx.fillStyle = G.INK;
+    ctx.fillRect(-17, 1.5, 7, 2);
+    ctx.fillRect(10, 1.5, 7, 2);
+    ctx.beginPath(); ctx.arc(-13.5, 4.6, 2.6, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(13.5, 4.6, 2.6, 0, 7); ctx.fill();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 4.2;
+    ctx.beginPath(); ctx.moveTo(-24, -3.5); ctx.lineTo(-18, 0); ctx.lineTo(18, 0); ctx.lineTo(24, -3.5); ctx.stroke();
+    ctx.strokeStyle = sy >= 0 ? G.DARK : G.LIGHT; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-23, -3.2); ctx.lineTo(-18, 0); ctx.lineTo(18, 0); ctx.lineTo(23, -3.2); ctx.stroke();
+    ctx.restore();
+  }
+  G.drawLooseBoard = function (x, y, rot) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot); drawBoard(0, 0, 0); ctx.restore();
+  };
+
+  function leg(fx, fy, hx, hy, bend) {
+    const kx = (fx + hx) / 2 + bend, ky = (fy + hy) / 2;
+    ctx.strokeStyle = G.SHADOW; ctx.lineWidth = 7;
+    ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(kx, ky); ctx.lineTo(fx, fy - 2); ctx.stroke();
+    ctx.fillStyle = G.INK;
+    ctx.beginPath(); ctx.ellipse(fx + 2, fy - 1.5, 5, 2.3, 0, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function arm(sx, sy, hx, hy) {
+    const ex = (sx + hx) / 2 - 1, ey = (sy + hy) / 2 + 3;
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 4.5;
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.lineTo(hx, hy); ctx.stroke();
+    ctx.fillStyle = G.PAPER; ctx.strokeStyle = G.INK; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.arc(hx, hy, 2.3, 0, 7); ctx.fill(); ctx.stroke();
+  }
+
+  // Hand targets (relative to the shoulder) for each arm pose: [backX, backY, frontX, frontY].
+  const ARM_POSES = {
+    relaxed: [-6, 17, 8, 15],
+    out: [-19, 2, 19, -2],
+    flail: [-14, -15, 15, -12],
+    grab: [-17, -4, 6, 30],
+  };
+
+  // Draws the hero with feet on the board at (sx, h.y). Reads pose fields set by the game rules.
+  G.drawHero = function (h, sx, t) {
+    ctx.save();
+    ctx.translate(sx, h.y);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+    if (h.state === 'bail') {
+      ctx.rotate(h.bailRot);   // falls flat like a plank, pivoting at the feet
+    } else {
+      ctx.rotate(h.tilt);
+      drawBoard(h.board.flip, h.board.spin, h.board.dy);
+    }
+
+    const c = h.crouch;
+    const lift = h.board.dy ? -h.board.dy * 0.6 : 0;
+    const footY = -9 + lift;
+    const hipX = -1, hipY = -37 + c * 12 + lift;
+    const bend = 3 + c * 8;
+    leg(-10, footY, hipX, hipY, bend);
+    leg(9, footY, hipX + 1, hipY, bend);
+
+    const shx = hipX + 4 + h.lean, shy = hipY - 21;
+    ctx.fillStyle = G.INK;
+    ctx.beginPath();
+    ctx.moveTo(hipX - 6, hipY + 3); ctx.lineTo(hipX + 6, hipY + 3);
+    ctx.lineTo(shx + 6, shy + 1); ctx.lineTo(shx - 6, shy + 1);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = G.PAPER;
+    ctx.beginPath(); ctx.moveTo(shx, shy + 1); ctx.lineTo(shx + 5, shy + 1); ctx.lineTo(shx + 3, shy + 8); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(shx + 2.6, shy + 1); ctx.lineTo(shx + 3, shy + 7); ctx.stroke();
+
+    // Arms ease toward the current pose's targets, with a little wobble.
+    const pose = ARM_POSES[h.arms] || ARM_POSES.relaxed;
+    const wob = Math.sin(t * (h.arms === 'flail' ? 18 : 6)) * (h.arms === 'relaxed' ? 1.5 : 3);
+    if (!h.hands) h.hands = pose.slice();
+    for (let i = 0; i < 4; i++) h.hands[i] = G.lerp(h.hands[i], pose[i], 0.25);
+    arm(shx - 1, shy + 3, shx + h.hands[0], shy + h.hands[1] + wob);
+    arm(shx + 1, shy + 3, shx + h.hands[2], shy + h.hands[3] - wob);
+
+    // Head in profile facing right: slicked hair, pale face, flat brow, flat mouth.
+    const hx = shx + 2, hy = shy - 9;
+    ctx.fillStyle = G.INK;
+    ctx.beginPath(); ctx.ellipse(hx - 1.2, hy - 1.2, 6.4, 7.4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = G.PAPER; ctx.strokeStyle = G.INK; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.ellipse(hx + 1, hy, 6, 7.4, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = G.INK;
+    ctx.fillRect(hx + 3, hy - 1.6, 1.8, 2);
+    ctx.lineWidth = 1.3;
+    ctx.beginPath(); ctx.moveTo(hx + 1.5, hy - 3.6); ctx.lineTo(hx + 5.8, hy - 3.4); ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(hx + 2.8, hy + 3.6); ctx.lineTo(hx + 5.6, hy + 3.6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(hx + 6.7, hy - 1.2); ctx.lineTo(hx + 8, hy + 1.6); ctx.lineTo(hx + 6.6, hy + 1.9); ctx.stroke();
+    ctx.strokeStyle = G.MID;
+    ctx.beginPath(); ctx.arc(hx - 1.2, hy + 0.5, 1.6, -1.2, 1.6); ctx.stroke();
+
+    if (h.hatOn) G.drawHat(hx + 0.5, hy - 6.6 - h.hatLift, -0.06 + h.hatSpin);
+    ctx.restore();
+  };
+
+  // Where the hat sits when the hero stands upright (relative to his feet), for the hat-drop gag.
+  G.HAT_SPOT = { x: 5.5, y: -72.5 };
+})();
+
+// The world: a 1920s main street in parallax layers, plus the things to skate on and over.
+(function () {
+  const ctx = G.ctx, GR = G.GROUND, WALK = GR - 16;
+
+  function hash(i) { const s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+
+  const SIGNS = ['HOTEL', 'BARBER', 'DRY GOODS', 'BANK', 'CAFE', 'PHOTOPLAYS', 'HARDWARE', 'BAKERY',
+    'TAILOR', 'SODA FOUNTAIN', 'PHARMACY', 'POOL HALL', 'LAUNDRY', 'GENERAL STORE', 'FEED & SEED', 'TELEGRAPH'];
+
+  function farSkyline(off) {
+    ctx.fillStyle = '#cbbfa3';
+    const slot = 46;
+    for (let i = Math.floor(off / slot) - 1; i < (off + G.viewW) / slot + 1; i++) {
+      const x = i * slot - off, h = 40 + hash(i) * 70;
+      ctx.fillRect(x, WALK - 60 - h, slot - 4, h + 60);
+      if (hash(i + 50) > 0.8) {          // water tower
+        ctx.fillRect(x + 8, WALK - 60 - h - 26, 22, 16);
+        ctx.fillRect(x + 11, WALK - 60 - h - 10, 2, 10);
+        ctx.fillRect(x + 25, WALK - 60 - h - 10, 2, 10);
+        ctx.beginPath(); ctx.moveTo(x + 6, WALK - 60 - h - 26); ctx.lineTo(x + 19, WALK - 60 - h - 34); ctx.lineTo(x + 32, WALK - 60 - h - 26); ctx.fill();
+      } else if (hash(i + 90) > 0.6) {   // chimney
+        ctx.fillRect(x + 28, WALK - 60 - h - 14, 6, 14);
+      }
+    }
+  }
+
+  function storefront(i, x, w) {
+    const h = 120 + hash(i + 3) * 80, top = WALK - h;
+    const tones = ['#b5aa8f', '#9f9479', '#c2b79c', '#8e8470'];
+    ctx.fillStyle = tones[(hash(i + 7) * tones.length) | 0];
+    ctx.fillRect(x, top, w, h);
+    ctx.fillStyle = G.SHADOW;
+    ctx.fillRect(x - 3, top, w + 6, 6);                       // cornice
+    ctx.fillRect(x, top + 6, w, 2);
+
+    const rows = Math.floor((h - 70) / 34);                    // upper windows
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < 3; c++) {
+        const wx = x + 16 + c * ((w - 32) / 3), wy = top + 18 + r * 34;
+        ctx.fillStyle = G.SHADOW; ctx.fillRect(wx, wy, 16, 22);
+        ctx.fillStyle = 'rgba(239,230,208,0.25)'; ctx.fillRect(wx + 2, wy + 2, 5, 18);
+        ctx.fillStyle = G.LIGHT; ctx.fillRect(wx - 2, wy + 22, 20, 2);
+      }
+    }
+
+    // Shop sign, striped awning, plate-glass window and door.
+    const signY = WALK - 66;
+    ctx.fillStyle = G.INK; ctx.fillRect(x + 8, signY, w - 16, 16);
+    ctx.fillStyle = G.PAPER;
+    ctx.font = '11px ' + G.BODY_FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(SIGNS[(hash(i + 11) * SIGNS.length) | 0], x + w / 2, signY + 8.5);
+    ctx.textBaseline = 'alphabetic';
+    const aw = WALK - 48;
+    for (let s = 0; s < w - 8; s += 12) {
+      ctx.fillStyle = (s / 12) % 2 ? G.PAPER : G.DARK;
+      ctx.beginPath();
+      ctx.moveTo(x + 4 + s, aw); ctx.lineTo(x + 16 + s, aw);
+      ctx.lineTo(x + 18 + s, aw + 12); ctx.lineTo(x + 2 + s, aw + 12);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = G.SHADOW; ctx.fillRect(x + 12, aw + 14, w - 52, 32);
+    ctx.strokeStyle = 'rgba(239,230,208,0.3)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x + 18, aw + 42); ctx.lineTo(x + 34, aw + 18); ctx.stroke();
+    ctx.fillStyle = G.INK; ctx.fillRect(x + w - 32, aw + 12, 18, 36);
+  }
+
+  G.drawBackground = function (camX) {
+    const W = G.viewW;
+    const sky = ctx.createLinearGradient(0, 0, 0, WALK);
+    sky.addColorStop(0, '#f4edda'); sky.addColorStop(1, '#ddd3b9');
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, WALK);
+
+    farSkyline(camX * 0.15);
+
+    const off = camX * 0.5, slot = 190;
+    for (let i = Math.floor(off / slot) - 1; i < (off + W) / slot + 1; i++) {
+      storefront(i, i * slot - off + 6, slot - 12 - hash(i + 21) * 20);
+    }
+
+    // Telegraph poles and sagging wires.
+    const po = camX * 0.8, gap = 320;
+    ctx.strokeStyle = G.SHADOW;
+    for (let i = Math.floor(po / gap) - 1; i < (po + W) / gap + 1; i++) {
+      const x = i * gap - po;
+      ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x, WALK); ctx.lineTo(x, 40); ctx.stroke();
+      ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x - 18, 52); ctx.lineTo(x + 18, 52); ctx.stroke();
+      ctx.lineWidth = 0.8;
+      for (const dx of [-15, 15]) {
+        ctx.beginPath(); ctx.moveTo(x + dx, 52); ctx.quadraticCurveTo(x + dx + gap / 2, 74, x + dx + gap, 52); ctx.stroke();
+      }
+    }
+
+    // Sidewalk, curb, cobbled street with trolley tracks.
+    ctx.fillStyle = '#c9bea3';
+    ctx.fillRect(0, WALK, W, GR - WALK);
+    ctx.strokeStyle = 'rgba(59,53,43,0.4)'; ctx.lineWidth = 1;
+    for (let x = -(camX % 40); x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, WALK); ctx.lineTo(x - 6, GR); ctx.stroke(); }
+    ctx.fillStyle = G.DARK; ctx.fillRect(0, GR, W, G.VIEW_H - GR);
+    ctx.fillStyle = G.INK; ctx.fillRect(0, GR, W, 2.5);
+    ctx.fillStyle = G.SHADOW;
+    for (let row = 0; row < 5; row++) {
+      const y = GR + 6 + row * 11, par = 1 + row * 0.12, stag = row % 2 ? 9 : 0;
+      for (let x = -((camX * par + stag) % 18); x < W; x += 18) G.roundRect(x, y, 15, 8, 3), ctx.fill();
+    }
+    ctx.fillStyle = G.LIGHT;
+    ctx.fillRect(0, GR + 24, W, 1.5);
+    ctx.fillRect(0, GR + 36, W, 1.5);
+  };
+
+  // Gas lamps that sweep past in front of the action.
+  G.drawForeground = function (camX) {
+    const fo = camX * 1.35, gap = 900;
+    for (let i = Math.floor(fo / gap) - 1; i < (fo + G.viewW) / gap + 1; i++) {
+      const x = i * gap - fo + 300;
+      ctx.fillStyle = G.INK;
+      ctx.fillRect(x - 3, 90, 6, G.VIEW_H - 90);
+      ctx.fillRect(x - 9, G.VIEW_H - 24, 18, 24);
+      ctx.beginPath(); ctx.moveTo(x - 11, 90); ctx.lineTo(x + 11, 90); ctx.lineTo(x + 7, 64); ctx.lineTo(x - 7, 64); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(239,230,208,0.55)'; ctx.fillRect(x - 6, 70, 12, 16);
+      ctx.fillStyle = G.INK; ctx.beginPath(); ctx.moveTo(x - 10, 64); ctx.lineTo(x, 54); ctx.lineTo(x + 10, 64); ctx.fill();
+    }
+  };
+
+  // ---- Obstacles. Every top is grindable except kicker ramps; hitting the side means a bail,
+  // except the clothesline, which is high enough to ride under.
+  const world = G.world = { list: [], nextX: 760 };
+  function add(kind, x, w, h, variant) {
+    world.list.push({ kind, x, w, h, top: GR - h, variant });
+    return x + w;
+  }
+  const PATTERNS = [
+    (x) => add('bench', x, 110, 26),
+    (x) => add('rail', x, G.rand(170, 250), 36),
+    (x) => add('ledge', x, G.rand(120, 170), 30),
+    (x) => add('crate', x, 30, 30, Math.random() < 0.5 ? 'crate' : 'barrel'),
+    (x) => add('line', add('kicker', x, 64, 30) + 50, G.rand(230, 300), 104),
+    (x) => add('crate', add('ledge', x, 130, 30) + 240, 30, 30, 'crate'),
+    (x) => add('bench', add('bench', x, 110, 26) + 210, 110, 26),
+    (x) => add('rail', add('crate', x, 30, 30, 'barrel') + 230, 200, 36),
+    (x) => add('kicker', x, 64, 30),
+  ];
+  G.updateWorld = function (camX) {
+    while (world.nextX < camX + G.viewW + 400) {
+      // A falling house gets the street to itself, with room to stand still in front of it.
+      const end = world.wantFacade
+        ? (world.wantFacade = false, add('facade', world.nextX + 260, 170, 200) + 380)
+        : PATTERNS[(Math.random() * PATTERNS.length) | 0](world.nextX);
+      world.nextX = end + (G.clock && G.clock.reel === 2 ? G.rand(220, 380) : G.rand(280, 480));
+    }
+    while (world.list.length && world.list[0].x + world.list[0].w < camX - 300) world.list.shift();
+  };
+
+  function drawObstacle(o, x, t) {
+    const top = o.top, w = o.w;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    if (o.kind === 'bench') {
+      ctx.fillStyle = G.DARK;
+      ctx.fillRect(x + 4, top - 18, w - 8, 4); ctx.fillRect(x + 4, top - 11, w - 8, 4);
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 3;
+      for (const lx of [x + 10, x + w - 10]) {
+        ctx.beginPath(); ctx.moveTo(lx, top - 20); ctx.lineTo(lx, GR);
+        ctx.moveTo(lx - 6, GR); ctx.quadraticCurveTo(lx, top + 8, lx + 6, GR); ctx.stroke();
+      }
+      ctx.fillStyle = '#7d705a'; ctx.fillRect(x, top, w, 5);
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 1; ctx.strokeRect(x, top, w, 5);
+    } else if (o.kind === 'rail') {
+      ctx.strokeStyle = G.INK;
+      ctx.lineWidth = 3;
+      for (let px = x + 6; px <= x + w - 6; px += Math.max(50, (w - 12) / Math.round((w - 12) / 60))) {
+        ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, GR); ctx.stroke();
+      }
+      ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, top + 16); ctx.lineTo(x + w, top + 16); ctx.stroke();
+      ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x + w, top); ctx.stroke();
+      ctx.strokeStyle = G.MID; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 2, top - 1); ctx.lineTo(x + w - 2, top - 1); ctx.stroke();
+    } else if (o.kind === 'ledge') {
+      ctx.fillStyle = '#8b7c62'; ctx.fillRect(x, top + 4, w, o.h - 4);
+      ctx.strokeStyle = 'rgba(23,19,13,0.45)'; ctx.lineWidth = 1;
+      for (let r = 0; r < 3; r++) {
+        const y = top + 4 + r * 9;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.stroke();
+        for (let bx = x + (r % 2 ? 9 : 0); bx < x + w; bx += 18) { ctx.beginPath(); ctx.moveTo(bx, y); ctx.lineTo(bx, y + 9); ctx.stroke(); }
+      }
+      ctx.fillStyle = G.LIGHT; ctx.fillRect(x - 3, top, w + 6, 5);
+      ctx.strokeStyle = G.INK; ctx.strokeRect(x - 3, top, w + 6, 5);
+    } else if (o.kind === 'crate') {
+      if (o.variant === 'barrel') {
+        ctx.fillStyle = '#7d705a'; G.roundRect(x, top, w, o.h, 7); ctx.fill();
+        ctx.strokeStyle = G.INK; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.lineWidth = 2;
+        for (const yy of [top + 7, top + o.h - 7]) { ctx.beginPath(); ctx.moveTo(x, yy); ctx.lineTo(x + w, yy); ctx.stroke(); }
+      } else {
+        ctx.fillStyle = '#9a8a6a'; ctx.fillRect(x, top, w, o.h);
+        ctx.strokeStyle = G.INK; ctx.lineWidth = 1.5; ctx.strokeRect(x, top, w, o.h);
+        ctx.beginPath(); ctx.moveTo(x + 3, top + 3); ctx.lineTo(x + w - 3, top + o.h - 3);
+        ctx.moveTo(x + w - 3, top + 3); ctx.lineTo(x + 3, top + o.h - 3); ctx.stroke();
+      }
+    } else if (o.kind === 'kicker') {
+      ctx.fillStyle = '#7d705a'; G.roundRect(x + w - 24, top + 4, 22, o.h - 4, 5); ctx.fill();
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.lineWidth = 6; ctx.strokeStyle = G.INK;
+      ctx.beginPath(); ctx.moveTo(x, GR); ctx.lineTo(x + w, top); ctx.stroke();
+      ctx.lineWidth = 3; ctx.strokeStyle = '#9a8a6a';
+      ctx.beginPath(); ctx.moveTo(x + 2, GR - 1); ctx.lineTo(x + w - 1, top + 0.5); ctx.stroke();
+    } else if (o.kind === 'line') {
+      ctx.strokeStyle = G.SHADOW; ctx.lineWidth = 4;
+      for (const px of [x - 6, x + w + 6]) { ctx.beginPath(); ctx.moveTo(px, WALK); ctx.lineTo(px, top - 10); ctx.stroke(); }
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x - 6, top); ctx.lineTo(x + w + 6, top); ctx.stroke();
+      for (let lx = x + 18, k = 0; lx < x + w - 20; lx += 46, k++) {     // laundry, swaying
+        const sway = Math.sin(t * 3 + k) * 2;
+        ctx.save(); ctx.translate(lx, top); ctx.rotate(sway * 0.03);
+        ctx.fillStyle = k % 3 === 1 ? G.LIGHT : G.PAPER;
+        ctx.strokeStyle = G.INK; ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (k % 3 === 0) {          // long johns
+          ctx.moveTo(0, 0); ctx.lineTo(20, 0); ctx.lineTo(19, 30); ctx.lineTo(13, 30); ctx.lineTo(10, 14); ctx.lineTo(7, 30); ctx.lineTo(1, 30);
+        } else if (k % 3 === 1) {   // shirt
+          ctx.moveTo(0, 0); ctx.lineTo(22, 0); ctx.lineTo(26, 8); ctx.lineTo(20, 9); ctx.lineTo(19, 22); ctx.lineTo(3, 22); ctx.lineTo(2, 9); ctx.lineTo(-4, 8);
+        } else {                    // stockings
+          ctx.moveTo(2, 0); ctx.lineTo(7, 0); ctx.lineTo(7, 18); ctx.lineTo(10, 21); ctx.lineTo(4, 22); ctx.lineTo(2, 18);
+        }
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = G.INK; ctx.fillRect(3, -2, 2, 4); ctx.fillRect(15, -2, 2, 4);
+        ctx.restore();
+      }
+    }
+  }
+
+  G.drawObstacles = function (camX, t) {
+    for (const o of world.list) {
+      const x = o.x - camX;
+      if (x > G.viewW + 40 || x + o.w < -40) continue;
+      drawObstacle(o, x, t);
+    }
+  };
+})();
+
+// The rules: skating physics, tricks, grinds, combos, bails, and the intertitle-style score cards.
+(function () {
+  const ctx = G.ctx, GR = G.GROUND;
+  const GRAVITY = 1800;
+
+  const TRICKS = {
+    left: { name: 'Kickflip', pts: 100, dur: 0.42, kind: 'flip' },
+    right: { name: 'Heelflip', pts: 100, dur: 0.42, kind: 'flip' },
+    down: { name: '360 Shove-It', pts: 150, dur: 0.45, kind: 'spin' },
+    up: { name: 'Hat Trick', pts: 200, dur: 0.55, kind: 'hat' },
+    tap: { name: 'Stone Face Grab', pts: 120, dur: 0.4, kind: 'grab' },
+  };
+  const GRINDS = { bench: 'Boardslide', rail: '50-50 Grind', ledge: '5-0 Grind', crate: 'Crate Slide', line: 'Clothesline Grind' };
+  const BAIL_LINES = ['Not a flicker of expression.', 'He meant to do that.', 'The hat, as ever, survives.',
+    'Dignity: temporarily misplaced.', 'A face of perfect calm.', 'The pavement wins this round.'];
+
+  const hero = G.hero = {};
+  const looseBoard = { active: false }, looseHat = { active: false };
+  const combo = { names: [], base: 0, mult: 0, counts: {} };
+  const popups = [];
+  const stats = G.stats = { bestCombo: 0, bails: 0 };
+  let banner = null, score = 0, time = 0;
+  G.getScore = () => score;
+  G.combo = combo;
+
+  function reset() {
+    Object.assign(hero, {
+      x: 0, y: GR, vy: 0, state: 'ground', speed: 120, crouch: 0.1, tilt: 0, lean: 2,
+      trick: null, queued: null, grind: null, onRamp: null, charging: false, ghost: false,
+      hatOn: true, hatLift: 0, hatSpin: 0, board: { flip: 0, spin: 0, dy: 0 },
+      arms: 'relaxed', bailT: 0, bailRot: 0,
+    });
+    looseBoard.active = looseHat.active = false;
+    clearCombo();
+    popups.length = 0;
+    banner = null; score = 0; time = 0;
+    stats.bestCombo = 0; stats.bails = 0;
+    G.world.list.length = 0;
+    G.world.nextX = 760;
+    G.world.wantFacade = false;
+    if (G.chase) G.chase.reset();
+  }
+
+  // ---- Helpers
+  function rampAt(x) {
+    for (const o of G.world.list) if (o.kind === 'kicker' && x >= o.x && x <= o.x + o.w) return o;
+    return null;
+  }
+  function surfaceAt(x) {
+    const r = rampAt(x);
+    return r ? GR - r.h * (x - r.x) / r.w : GR;
+  }
+  function overlapping(o, pad) { return hero.x + pad > o.x && hero.x - pad < o.x + o.w; }
+  function hitSide() {
+    if (hero.ghost) return null;
+    for (const o of G.world.list) {
+      if (o.kind === 'kicker' || o.kind === 'line' || o.kind === 'facade') continue;
+      if (overlapping(o, 7) && hero.y > o.top + 5) return o;
+    }
+    return null;
+  }
+  function grindTarget(prevY) {
+    for (const o of G.world.list) {
+      if (o.kind === 'kicker' || o.kind === 'facade') continue;
+      if (hero.x >= o.x - 8 && hero.x <= o.x + o.w - 4 && prevY <= o.top + 3 && hero.y >= o.top) return o;
+    }
+    return null;
+  }
+  function midTrick() { return hero.trick && hero.trick.t < hero.trick.def.dur - 0.09; }
+  function resetPose() {
+    hero.board.flip = hero.board.spin = hero.board.dy = 0;
+    hero.hatLift = hero.hatSpin = 0;
+  }
+
+  // ---- Combos
+  function addToCombo(name, pts) {
+    const n = (combo.counts[name] = (combo.counts[name] || 0) + 1);
+    combo.base += pts * Math.pow(0.5, n - 1);   // repeating a trick in one combo is worth less
+    combo.mult += 1;
+    combo.names.push(name);
+    popups.push({ text: name, t: 0 });
+  }
+  function clearCombo() { combo.names = []; combo.base = 0; combo.mult = 0; combo.counts = {}; }
+  function bankCombo() {
+    if (!combo.mult) return;
+    const total = Math.round(combo.base) * combo.mult;
+    score += total;
+    stats.bestCombo = Math.max(stats.bestCombo, total);
+    if (G.chase) G.chase.onBank(total);
+    G.sfx('bank');
+    banner = { text: '+' + G.fmt(total), sub: combo.mult > 1 ? combo.mult + '-trick combo!' : combo.names[0], t: 0 };
+    clearCombo();
+  }
+
+  // ---- Actions
+  function doTrick(key) {
+    if (hero.state !== 'air') return;
+    if (hero.trick) { hero.queued = key; return; }
+    const def = TRICKS[key];
+    hero.trick = { def, t: 0 };
+    addToCombo(def.name, def.pts);
+    if (def.kind === 'hat') G.sfx('whistleUp');
+  }
+
+  function ollie(dir) {
+    if (hero.state === 'air') return doTrick(dir || 'tap');
+    if (hero.state !== 'ground' && hero.state !== 'grind') return;
+    const held = G.clamp((performance.now() - G.input.t) / 1000, 0, 0.3);
+    hero.vy = -(600 + (held / 0.3) * 200) - (hero.onRamp ? 250 : 0);
+    hero.state = 'air';
+    hero.grind = null; hero.onRamp = null; hero.charging = false;
+    G.emit('dust', hero.x - 8, hero.y, 3, 30);
+    G.sfx('ollie');
+    if (dir) doTrick(dir);
+  }
+
+  function startGrind(o) {
+    if (midTrick()) { hero.y = o.top; return bail(o); }
+    hero.trick = null; hero.queued = null; resetPose();
+    hero.state = 'grind'; hero.grind = o; hero.y = o.top; hero.vy = 0;
+    addToCombo(GRINDS[o.kind], 100);
+    G.sfx('grind');
+  }
+
+  function land(sy) {
+    hero.y = sy;
+    if (midTrick()) return bail(null);
+    hero.trick = null; hero.queued = null; resetPose();
+    hero.state = 'ground'; hero.vy = 0; hero.crouch = 0.95;
+    G.emit('dust', hero.x - 6, sy, 6, 60);
+    G.sfx('land');
+    bankCombo();
+  }
+
+  function bail(o) {
+    if (hero.state === 'bail') return;
+    hero.state = 'bail';
+    hero.bailT = 0; hero.bailRot = 0;
+    hero.trick = null; hero.queued = null; hero.grind = null; hero.onRamp = null; hero.charging = false;
+    hero.vy = Math.max(hero.vy, -100);
+    resetPose();
+    clearCombo();
+    banner = { text: 'BAILED!', sub: BAIL_LINES[(Math.random() * BAIL_LINES.length) | 0], t: 0, bail: true };
+
+    hero.hatOn = false;
+    Object.assign(looseHat, { active: true, x: hero.x + 5, y: hero.y - 72, vx: hero.speed * 0.4 + 30, vy: -650, rot: 0, vr: 9 });
+    Object.assign(looseBoard, { active: true, returning: false, x: hero.x, y: hero.y, vx: hero.speed * 1.1 + 60, vy: -220, rot: 0, vr: 14 });
+    G.shake = 7;
+    stats.bails++;
+    G.sfx('bail');
+    if (G.chase) G.chase.onBail();
+    if (o && o.kind === 'crate') G.emit('chip', hero.x + 12, o.top + 8, 9, 140);
+    G.emit('dust', hero.x + 30, GR, 8, 80);
+  }
+
+  G.handlers.press = () => {
+    if (hero.state === 'ground' || hero.state === 'grind') hero.charging = true;
+  };
+  G.handlers.release = () => { hero.charging = false; ollie(null); };
+  G.handlers.swipe = (dir) => { hero.charging = false; ollie(dir); };
+
+  // ---- Simulation
+  function updateTrick(dt) {
+    const tk = hero.trick;
+    if (!tk) return;
+    tk.t += dt;
+    const p = Math.min(1, tk.t / tk.def.dur), kind = tk.def.kind;
+    hero.board.flip = kind === 'flip' ? p * Math.PI * 2 : 0;
+    hero.board.spin = kind === 'spin' ? p * Math.PI * 2 : 0;
+    hero.board.dy = kind === 'flip' || kind === 'spin' ? Math.sin(p * Math.PI) * 7 : 0;
+    hero.hatLift = kind === 'hat' ? Math.sin(p * Math.PI) * 44 : 0;
+    hero.hatSpin = kind === 'hat' ? p * Math.PI * 4 : 0;
+    if (p >= 1) {
+      hero.trick = null;
+      resetPose();
+      if (hero.queued) { const q = hero.queued; hero.queued = null; doTrick(q); }
+    }
+  }
+
+  function updateBail(dt) {
+    const bt = (hero.bailT += dt);
+    hero.speed = Math.max(0, hero.speed - 520 * dt);
+    if (hero.y < GR) { hero.vy += GRAVITY * dt; hero.y = Math.min(GR, hero.y + hero.vy * dt); }
+
+    // Falls flat like a plank, bounces once, lies there, then springs back up.
+    if (bt < 0.32) hero.bailRot = Math.pow(bt / 0.32, 2) * Math.PI / 2;
+    else if (bt < 0.5) hero.bailRot = Math.PI / 2 - Math.sin((bt - 0.32) / 0.18 * Math.PI) * 0.14;
+    else if (bt < 1.05) hero.bailRot = Math.PI / 2;
+    else if (bt < 1.3) hero.bailRot = (Math.PI / 2) * (1 - (bt - 1.05) / 0.25);
+    else hero.bailRot = 0;
+
+    // The board scoots off, then rolls back and flips itself under his feet.
+    const b = looseBoard;
+    if (bt < 1.0) {
+      b.vx = Math.max(0, b.vx - 260 * dt);
+      b.vy += GRAVITY * dt; b.x += b.vx * dt; b.y += b.vy * dt;
+      if (b.y >= GR) { b.y = GR; b.vy = b.vy > 200 ? -b.vy * 0.3 : 0; b.vr *= 0.5; }
+      b.rot = b.y >= GR ? G.lerp(b.rot % (Math.PI * 2), 0, 0.2) : b.rot + b.vr * dt;
+    } else {
+      if (!b.returning) { b.returning = true; b.x0 = b.x; }
+      const p = Math.min(1, (bt - 1.0) / 0.3);
+      b.x = G.lerp(b.x0, hero.x, p);
+      b.y = GR - Math.sin(p * Math.PI) * 26;
+      b.rot = (1 - p) * -Math.PI * 2;
+    }
+
+    // The hat sails up out of the picture and drops neatly back onto his head.
+    const hat = looseHat;
+    if (bt < 0.75) {
+      hat.vy += 900 * dt; hat.x += hat.vx * dt; hat.y += hat.vy * dt; hat.rot += hat.vr * dt;
+      hat.fromX = hat.x; hat.fromY = hat.y;
+    } else {
+      const p = Math.min(1, (bt - 0.75) / 0.75);
+      hat.x = G.lerp(hat.fromX, hero.x + G.HAT_SPOT.x, Math.min(1, p * 1.6));
+      hat.y = G.lerp(Math.min(hat.fromY, -30), GR + G.HAT_SPOT.y, p * p);
+      hat.rot = G.lerp(hat.rot, -0.06, 0.15);
+    }
+
+    if (bt >= 1.55) {
+      hero.state = 'ground'; hero.y = GR; hero.vy = 0; hero.ghost = true;
+      hero.hatOn = true; looseHat.active = false; looseBoard.active = false;
+    }
+  }
+
+  function tickText(dt) {
+    for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t += dt) > 0.9) popups.splice(i, 1);
+    if (banner && (banner.t += dt) > 1.6) banner = null;
+  }
+
+  function update(dt) {
+    time += dt;
+    const h = hero;
+    if (G.chase.nabT() >= 0) {        // collared: the world holds still for the dogpile
+      G.chase.update(dt); G.updateParticles(dt); tickText(dt);
+      return;
+    }
+    const target = 250 + Math.min(time, 120) * 0.6;
+    if (h.state !== 'bail') h.speed = Math.min(target, h.speed + 260 * dt);
+    h.x += h.speed * dt;
+    G.updateWorld(h.x - G.viewW * 0.3);
+
+    if (h.state === 'ground') {
+      const r = rampAt(h.x);
+      if (r) {
+        h.onRamp = r; h.y = GR - r.h * (h.x - r.x) / r.w; h.tilt = -Math.atan2(r.h, r.w);
+      } else if (h.onRamp) {
+        h.state = 'air'; h.vy = -(380 + h.speed * 1.6); h.onRamp = null;
+        G.sfx('ollie');
+      } else {
+        h.y = GR; h.tilt = G.lerp(h.tilt, 0, 0.3);
+      }
+      if (h.ghost && !G.world.list.some((o) => overlapping(o, 16))) h.ghost = false;
+      if (h.state === 'ground') { const o = hitSide(); if (o) bail(o); }
+    } else if (h.state === 'air') {
+      const prevY = h.y;
+      h.vy += GRAVITY * dt;
+      h.y += h.vy * dt;
+      h.tilt = G.lerp(h.tilt, G.clamp(h.vy / 4000, -0.12, 0.18), 0.15);
+      updateTrick(dt);
+      if (h.vy > 0) { const o = grindTarget(prevY); if (o) startGrind(o); }
+      if (h.state === 'air') {
+        const sy = surfaceAt(h.x);
+        if (h.y >= sy) land(sy);
+        else { const o = hitSide(); if (o) bail(o); }
+      }
+    } else if (h.state === 'grind') {
+      const o = h.grind;
+      h.y = o.top;
+      h.tilt = Math.sin(time * 11) * 0.05;
+      combo.base += 90 * dt;
+      if (o.kind !== 'line' && Math.random() < 0.7) G.emit('spark', h.x + G.rand(-14, 10), o.top, 1, 140);
+      if (h.x > o.x + o.w) { h.state = 'air'; h.vy = -160; h.grind = null; }
+    } else {
+      updateBail(dt);
+    }
+
+    // Pose: how low he crouches and what his arms are doing.
+    let crouch = 0.1, arms = 'relaxed';
+    if (h.state === 'ground') crouch = h.charging ? 1 : 0.1;
+    else if (h.state === 'air') {
+      crouch = h.trick ? 0.85 : 0.5;
+      arms = h.trick && h.trick.def.kind === 'grab' ? 'grab' : 'flail';
+    } else if (h.state === 'grind') { crouch = 0.35; arms = 'out'; }
+    else { crouch = 0.1; arms = h.bailT < 0.4 ? 'flail' : 'relaxed'; }
+    h.crouch = G.lerp(h.crouch, crouch, Math.min(1, dt * 14));
+    h.arms = arms;
+
+    G.chase.update(dt);
+    G.updateParticles(dt);
+    tickText(dt);
+  }
+
+  // ---- Drawing
+  function plate(x, y, w, h) {
+    ctx.fillStyle = 'rgba(23,19,13,0.88)';
+    G.roundRect(x, y, w, h, 4); ctx.fill();
+    ctx.strokeStyle = 'rgba(239,230,208,0.8)'; ctx.lineWidth = 1;
+    G.roundRect(x + 3, y + 3, w - 6, h - 6, 2); ctx.stroke();
+  }
+  function outlined(text, x, y) {
+    ctx.lineWidth = 4; ctx.strokeStyle = G.INK; ctx.strokeText(text, x, y);
+    ctx.fillStyle = G.PAPER; ctx.fillText(text, x, y);
+  }
+
+  function drawHUD(heroSX) {
+    const W = G.viewW;
+    ctx.textBaseline = 'alphabetic';
+    ctx.lineJoin = 'round';
+
+    plate(12, 12, 132, 44);
+    ctx.fillStyle = G.PAPER; ctx.textAlign = 'left';
+    ctx.font = '10px ' + G.BODY_FONT; ctx.fillText('SCORE', 22, 28);
+    ctx.font = G.NUM_FONT.replace('{s}', 20); ctx.fillText(G.fmt(score), 22, 49);
+
+    if (combo.mult) {
+      let names = combo.names.slice(-3).join(' + ');
+      if (combo.names.length > 3) names = '... + ' + names;
+      ctx.font = '12px ' + G.BODY_FONT;
+      const w = Math.min(W - 180, Math.max(ctx.measureText(names).width, 90) + 28);
+      const cx = Math.max(W / 2, 156 + w / 2);
+      plate(cx - w / 2, 12, w, 48);
+      ctx.textAlign = 'center'; ctx.fillStyle = G.PAPER;
+      ctx.fillText(names, cx, 30, w - 16);
+      ctx.font = G.NUM_FONT.replace('{s}', 17);
+      ctx.fillText(G.fmt(combo.base) + '  x  ' + combo.mult, cx, 51);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.font = '14px ' + G.BODY_FONT;
+    popups.forEach((p, i) => {
+      ctx.globalAlpha = 1 - p.t / 0.9;
+      outlined(p.text, heroSX + 10, GR - 100 - p.t * 40 - (popups.length - 1 - i) * 16 + (hero.y - GR) * 0.6);
+    });
+    ctx.globalAlpha = 1;
+
+    if (banner) {
+      const a = banner.t < 1.2 ? 1 : 1 - (banner.t - 1.2) / 0.4;
+      const s = 1 + Math.max(0, 0.2 - banner.t) * 2;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, a);
+      ctx.translate(W / 2, 112);
+      ctx.scale(s, s);
+      if (banner.bail) ctx.rotate(-0.06);
+      ctx.font = banner.bail ? '34px ' + G.TITLE_FONT : G.NUM_FONT.replace('{s}', 32);
+      ctx.lineWidth = 6; ctx.strokeStyle = G.INK; ctx.strokeText(banner.text, 0, 0);
+      ctx.fillStyle = G.PAPER; ctx.fillText(banner.text, 0, 0);
+      ctx.font = '14px ' + G.BODY_FONT;
+      outlined(banner.sub, 0, 22);
+      ctx.restore();
+    }
+
+    if (G.clock) {
+      const left = Math.max(0, Math.ceil(G.clock.left));
+      plate(W - 112, 12, 100, 44);
+      ctx.textAlign = 'center'; ctx.fillStyle = G.PAPER;
+      ctx.font = '10px ' + G.BODY_FONT;
+      ctx.fillText('REEL ' + (G.clock.reel === 1 ? 'ONE' : 'TWO'), W - 62, 28);
+      ctx.font = G.NUM_FONT.replace('{s}', 20);
+      if (left <= 5 && left > 0) ctx.fillStyle = (Math.floor(time * 4) % 2) ? G.PAPER : G.MID;
+      ctx.fillText(Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'), W - 62, 49);
+    }
+
+    if (time < 10) {
+      ctx.globalAlpha = time < 8 ? 1 : 1 - (time - 8) / 2;
+      const w = Math.min(W - 40, 430);
+      plate(W / 2 - w / 2, G.VIEW_H - 50, w, 42);
+      ctx.fillStyle = G.PAPER; ctx.font = '12px ' + G.BODY_FONT;
+      ctx.fillText('TAP to ollie (hold for a bigger leap)', W / 2, G.VIEW_H - 32, w - 20);
+      ctx.fillText('SWIPE for tricks  ·  LAND on rails & benches to grind', W / 2, G.VIEW_H - 16, w - 20);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function draw(t, withHUD) {
+    const heroSX = G.viewW * 0.3;
+    const camX = hero.x - heroSX;
+    G.drawBackground(camX);
+    G.drawObstacles(camX, t);
+    G.drawParticles(camX);
+    G.chase.draw(camX, heroSX, t);
+    if (looseBoard.active) G.drawLooseBoard(looseBoard.x - camX, looseBoard.y, looseBoard.rot);
+    G.drawHero(hero, heroSX, t);
+    if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
+    G.chase.drawOver(camX, heroSX, t);
+    G.drawForeground(camX);
+    if (withHUD) drawHUD(heroSX);
+    return heroSX;
+  }
+
+  // Safe to end a reel: not mid-air, mid-grind or mid-fall.
+  function settled() { return hero.state === 'ground'; }
+
+  // Banner cards for the set pieces. say() won't talk over another card unless forced.
+  function say(text, sub, force, isBail) {
+    if (banner && !force) return false;
+    banner = { text, sub, t: 0, bail: !!isBail };
+    return true;
+  }
+  function award(pts, text, sub) {
+    score += pts;
+    G.sfx('bank');
+    say(text, sub, true);
+  }
+
+  G.play = { reset, update, draw, settled, bank: bankCombo, say, award, bail };
+  reset();
+})();
+
+// Slapstick set pieces: a squad of cops giving chase, and the house front that falls on our hero.
+(function () {
+  const ctx = G.ctx, GR = G.GROUND, WALK = GR - 16;
+  const WOBBLE = 0.6, FALL = 1.0;     // seconds the house teeters, then topples
+  const SQUAD = 4;
+
+  const cops = {};
+  function reset() {
+    Object.assign(cops, { dist: 1, shown: 1, nabT: -1, warned: false, trips: [0, 0, 0, 0], nextTrip: 4 });
+  }
+  reset();
+
+  // ---- The falling house front (after Steamboat Bill, Jr.)
+  function updateFacade(o, dt) {
+    const h = G.hero;
+    if (!o.phase) { o.phase = 'stand'; o.t = 0; o.ang = 0; }
+    if (o.phase === 'stand') {
+      const lead = (o.x + o.w / 2 - h.x) / Math.max(h.speed, 1);
+      if (h.state !== 'bail' && lead > 0 && lead <= WOBBLE + FALL) {
+        o.phase = 'wobble'; o.t = 0;
+        G.play.say('LOOK OUT ABOVE!', 'Stand perfectly still...', true);
+        G.sfx('creak');
+      }
+    } else if (o.phase === 'wobble' || o.phase === 'fall') {
+      o.t += dt;
+      const left = WOBBLE + FALL - o.t;
+      // Ease the house along so its open window meets him exactly where he'll be.
+      if (h.state !== 'bail') o.x = G.lerp(o.x, h.x + h.speed * Math.max(0, left) - o.w / 2, 0.25);
+      if (o.phase === 'wobble') {
+        o.ang = Math.sin(o.t * 28) * 0.05 * (o.t / WOBBLE);
+        if (o.t >= WOBBLE) o.phase = 'fall';
+      } else {
+        const p = (o.t - WOBBLE) / FALL;
+        o.ang = p * p * Math.PI / 2;
+      }
+      if (left <= 0) impact(o);
+    }
+  }
+
+  function impact(o) {
+    const h = G.hero;
+    o.phase = 'down'; o.ang = Math.PI / 2;
+    G.shake = 14;
+    G.sfx('crash');
+    for (let k = 0; k <= 10; k++) G.emit('dust', o.x - 10 + k * (o.w + 20) / 10, GR + G.rand(-12, 22), 3, 70);
+    if (h.state === 'bail') return;
+    const inWindow = Math.abs(h.x - (o.x + o.w / 2)) < o.w * 0.14;
+    if (inWindow && h.state === 'ground') {
+      G.play.award(2500, 'STEAMBOAT SAVE!', 'Not a hair out of place.');
+      cops.dist = Math.min(1, cops.dist + 0.25);
+    } else {
+      o.squash = true;
+      G.play.bail(null);
+      G.play.say('FLATTENED!', 'He should have stood still.', true, true);
+    }
+  }
+
+  // Projects the house front as it rotates about its base toward the camera: upright it is a
+  // tall wall; flat, it is a slab lying across the street in front of him.
+  function drawFacade(o, x) {
+    const base = WALK + 2, D = 40, ang = o.ang || 0;
+    const topY = base - o.h * Math.cos(ang) + D * Math.sin(ang);
+    const widen = 0.22 * Math.max(0, Math.sin(ang));
+    const cx = x + o.w / 2, half = o.w / 2;
+    const P = (u, v) => [cx + (u * 2 - 1) * half * (1 + widen * v), base + (topY - base) * v];
+    const quad = (u0, v0, u1, v1) => {
+      const a = P(u0, v0), b = P(u1, v0), c = P(u1, v1), d = P(u0, v1);
+      ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.closePath();
+    };
+    const fillQuad = (u0, v0, u1, v1, color) => { ctx.beginPath(); quad(u0, v0, u1, v1); ctx.fillStyle = color; ctx.fill(); };
+
+    if (ang > 0.15) {        // its shadow sweeping over the street
+      ctx.fillStyle = 'rgba(23,19,13,' + (0.35 * Math.sin(ang)) + ')';
+      ctx.beginPath(); ctx.ellipse(cx, GR + 10, half * 1.2, 6 + 18 * Math.sin(ang), 0, 0, 7); ctx.fill();
+    }
+
+    // Wall with the open upstairs window cut clean through it, plus a gable on top.
+    ctx.beginPath();
+    quad(0, 0, 1, 0.8);
+    quad(0.36, 0.3, 0.64, 0.62);
+    ctx.fillStyle = '#b9ae93';
+    ctx.fill('evenodd');
+    const g0 = P(-0.04, 0.8), g1 = P(1.04, 0.8), g2 = P(0.5, 1);
+    ctx.beginPath(); ctx.moveTo(g0[0], g0[1]); ctx.lineTo(g1[0], g1[1]); ctx.lineTo(g2[0], g2[1]); ctx.closePath();
+    ctx.fillStyle = G.DARK; ctx.fill();
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 1.2; ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(23,19,13,0.35)'; ctx.lineWidth = 0.8;     // clapboard siding
+    for (let v = 0.05; v < 0.8; v += 0.05) {
+      if (v > 0.3 && v < 0.62) {
+        let a = P(0, v), b = P(0.36, v); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+        a = P(0.64, v); b = P(1, v); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      } else {
+        const a = P(0, v), b = P(1, v); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      }
+    }
+    fillQuad(0.42, 0, 0.58, 0.27, G.SHADOW);                    // door
+    fillQuad(0.1, 0.08, 0.3, 0.25, G.SHADOW);                   // downstairs windows
+    fillQuad(0.7, 0.08, 0.9, 0.25, G.SHADOW);
+    fillQuad(0.09, 0.36, 0.27, 0.58, G.SHADOW);                 // upstairs windows, shutters closed
+    fillQuad(0.73, 0.36, 0.91, 0.58, G.SHADOW);
+    fillQuad(0.17, 0.36, 0.19, 0.58, G.MID);
+    fillQuad(0.81, 0.36, 0.83, 0.58, G.MID);
+    ctx.beginPath(); quad(0.36, 0.3, 0.64, 0.62);              // the lucky open window's frame
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.beginPath(); quad(0, 0, 1, 0.8);
+    ctx.lineWidth = 1.5; ctx.stroke();
+  }
+
+  // ---- The cops
+  function drawCop(x, t, i, trip) {
+    const ph = t * 13 + i * 1.7;
+    const bob = Math.abs(Math.sin(ph)) * 3;
+    ctx.save();
+    ctx.translate(x, GR - bob);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    if (trip > 0) { ctx.translate(0, -4); ctx.rotate(Math.min(1.45, (0.9 - trip) * 6)); }
+    else ctx.rotate(0.12);
+
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 6;
+    for (const s of [1, -1]) {
+      const sw = Math.sin(ph) * s;
+      ctx.beginPath(); ctx.moveTo(0, -32); ctx.lineTo(sw * 9 + 3, -17); ctx.lineTo(sw * 14, -2); ctx.stroke();
+    }
+    ctx.fillStyle = '#221d16';
+    ctx.beginPath(); ctx.moveTo(-11, -24); ctx.lineTo(10, -24); ctx.lineTo(7, -62); ctx.lineTo(-6, -62); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = G.LIGHT;
+    for (const by of [-56, -48, -40]) { ctx.beginPath(); ctx.arc(3.5, by, 1.2, 0, 7); ctx.fill(); }
+
+    const sx = 2, sy = -58, wave = -1.4 + Math.sin(ph * 0.5 + i) * 0.9;
+    const hx = sx + Math.cos(wave) * 15, hy = sy + Math.sin(wave) * 15;
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 4.5;
+    ctx.beginPath(); ctx.moveTo(sx - 2, sy); ctx.lineTo(sx - 10, sy + 8 - Math.sin(ph) * 6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(hx, hy); ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx + Math.cos(wave - 0.7) * 16, hy + Math.sin(wave - 0.7) * 16); ctx.stroke();
+    ctx.fillStyle = G.PAPER; ctx.beginPath(); ctx.arc(hx, hy, 2.4, 0, 7); ctx.fill();
+
+    ctx.fillStyle = G.PAPER; ctx.strokeStyle = G.INK; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(3, -70, 6.5, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = G.INK;
+    ctx.beginPath(); ctx.ellipse(6.5, -66.5, 5, 1.8, 0.1, 0, 7); ctx.fill();          // walrus moustache
+    ctx.fillRect(5.5, -72.5, 1.6, 1.8);
+    ctx.beginPath();                                                                  // tall helmet
+    ctx.moveTo(-6, -74); ctx.quadraticCurveTo(-6, -92, 2, -92); ctx.quadraticCurveTo(10, -92, 10, -74);
+    ctx.closePath(); ctx.fill();
+    ctx.fillRect(-8, -75, 20, 2.5);
+    ctx.fillStyle = G.LIGHT; ctx.beginPath(); ctx.arc(3, -82, 1.8, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+
+  // The classic dust-cloud dogpile, with limbs, truncheons and one porkpie hat poking out.
+  function drawPile(x, t) {
+    const cx = x + 14, cy = GR - 30, k = Math.floor(t * 12);
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + Math.sin(k * 1.7 + i * 3.1) * 0.5;
+      ctx.strokeStyle = G.INK; ctx.lineWidth = i % 2 ? 6 : 3;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * 20, cy + Math.sin(a) * 15);
+      ctx.lineTo(cx + Math.cos(a) * 48, cy + Math.sin(a) * 34);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 7; i++) {
+      const a = i * 0.9 + t * 4;
+      ctx.fillStyle = i % 2 ? G.LIGHT : G.PAPER;
+      ctx.strokeStyle = G.INK; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 20, cy + Math.sin(a) * 12, 19 + Math.sin(t * 9 + i) * 3, 0, 7);
+      ctx.fill(); ctx.stroke();
+    }
+    G.drawHat(cx - 10 + Math.sin(t * 7) * 8, cy - 40 - Math.abs(Math.sin(t * 9)) * 12, Math.sin(t * 5) * 0.6);
+  }
+
+  function update(dt) {
+    for (const o of G.world.list) if (o.kind === 'facade') updateFacade(o, dt);
+    if (cops.nabT >= 0) {
+      cops.nabT += dt;
+      if (Math.random() < 0.4) G.emit('dust', G.hero.x + G.rand(-30, 40), GR - G.rand(0, 40), 1, 60);
+      return;
+    }
+    if (G.hero.state !== 'bail') cops.dist = Math.min(1, cops.dist + 0.02 * dt);
+    cops.shown = G.lerp(cops.shown, cops.dist, Math.min(1, dt * 1.8));
+    if (cops.dist <= 0 && cops.shown < 0.08) { cops.nabT = 0; G.shake = 8; G.sfx('whistle'); }
+    if (!cops.warned && cops.dist < 0.5 && G.hero.state !== 'bail') {
+      cops.warned = G.play.say('THE LAW IS GAINING!', 'Land some tricks to stay ahead.');
+    }
+    cops.nextTrip -= dt;
+    if (cops.nextTrip <= 0) { cops.trips[(Math.random() * SQUAD) | 0] = 0.9; cops.nextTrip = G.rand(3, 7); }
+    for (let i = 0; i < SQUAD; i++) cops.trips[i] = Math.max(0, cops.trips[i] - dt);
+  }
+
+  function squashed(o) { return o.kind === 'facade' && o.squash && G.hero.state === 'bail'; }
+
+  // Behind the hero: house fronts, then the squad.
+  function draw(camX, heroSX, t) {
+    for (const o of G.world.list) if (o.kind === 'facade' && !squashed(o)) drawFacade(o, o.x - camX);
+    if (cops.nabT >= 0 || cops.shown > 0.92) return;
+    for (let i = SQUAD - 1; i >= 0; i--) {
+      const lag = cops.trips[i] > 0 ? (0.9 - cops.trips[i]) * 50 : 0;
+      const x = heroSX - 48 - cops.shown * 320 - i * 24 - lag;
+      if (x > -30) drawCop(x, t, i, cops.trips[i]);
+    }
+  }
+  // In front of the hero: a house that has flattened him, or the dogpile.
+  function drawOver(camX, heroSX, t) {
+    for (const o of G.world.list) if (squashed(o)) drawFacade(o, o.x - camX);
+    if (cops.nabT >= 0) drawPile(heroSX, t);
+  }
+
+  G.chase = {
+    reset, update, draw, drawOver,
+    onBail() {
+      cops.dist = Math.max(0, cops.dist - (G.clock && G.clock.reel === 2 ? 0.36 : 0.3));
+      if (cops.dist < 0.5) G.sfx('whistle');
+    },
+    onBank(total) { cops.dist = Math.min(1, cops.dist + Math.min(0.2, total / 6000)); },
+    nabT: () => cops.nabT,
+    cops,
+  };
+})();
+
+// Scenes: title card, film-leader countdown, reel intertitles, the run itself, iris-out and THE END.
+(function () {
+  const ctx = G.ctx, H = G.VIEW_H;
+  const REEL_SECONDS = 60;
+  const W = () => G.viewW;
+  const play = G.play;
+  const playHandlers = Object.assign({}, G.handlers);
+
+  let scene = 'title', sceneT = 0, reel = 1, titleCam = 0, lastCount = 0;
+  let best = 0, newBest = false, nabbed = false;
+  // When the falling houses turn up, in seconds into each reel.
+  const FACADES = { 1: [24], 2: [12, 40] };
+  try { best = +localStorage.getItem('trt-best') || 0; } catch (e) { /* storage unavailable */ }
+  G.clock = null;
+
+  const CARDS = {
+    1: ['REEL ONE', 'In which our hero borrows', 'a plank on wheels.'],
+    2: ['REEL TWO', 'In which matters grow', 'considerably worse.'],
+  };
+
+  function go(name) { scene = name; sceneT = 0; }
+  function startRun() {
+    play.reset();
+    G.clock = null; newBest = false; lastCount = 0; nabbed = false;
+    G.audio.setTempo(100);
+    go('leader');
+  }
+  function showCard(r) { reel = r; go('card'); }
+  function beginReel() {
+    G.clock = { reel, left: REEL_SECONDS, facades: FACADES[reel].slice() };
+    G.audio.setTempo(reel === 1 ? 100 : 118);
+    G.audio.setClatter(true);
+    go('play');
+  }
+  function finish() {
+    const s = G.getScore();
+    if (s > best) {
+      best = s; newBest = true;
+      try { localStorage.setItem('trt-best', String(best)); } catch (e) { /* ignore */ }
+    }
+    G.audio.setClatter(false);
+    G.audio.setTempo(92);
+    go('end');
+  }
+
+  // ---- Input: the mute button and scene changes come first; everything else goes to the skater.
+  function muteRect() { return { x: W() - 46, y: scene === 'play' ? 62 : 14, w: 34, h: 28 }; }
+  function muteHit() {
+    const r = muteRect(), i = G.input;
+    return i.fx > r.x - 6 && i.fx < r.x + r.w + 6 && i.fy > r.y - 6 && i.fy < r.y + r.h + 6;
+  }
+  G.handlers.press = () => {
+    G.audio.start();
+    if (muteHit()) { G.audio.toggleMute(); G.input.consumed = true; return; }
+    if (scene === 'play') return playHandlers.press();
+    if (scene === 'title') startRun();
+    else if (scene === 'card' && sceneT > 0.6) beginReel();
+    else if (scene === 'end' && sceneT > 1.2) startRun();
+    G.input.consumed = true;   // a tap that changes the scene shouldn't also make him jump
+  };
+  G.handlers.release = () => { if (scene === 'play') playHandlers.release(); };
+  G.handlers.swipe = (d) => { if (scene === 'play') playHandlers.swipe(d); };
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyM') { G.audio.start(); G.audio.toggleMute(); }
+  });
+
+  // ---- Update
+  function update(dt) {
+    sceneT += dt;
+    if (scene === 'title') {
+      titleCam += dt * 70;
+    } else if (scene === 'leader') {
+      const n = 3 - Math.floor(sceneT / 0.8);
+      if (n !== lastCount && n > 0) { lastCount = n; G.sfx('tick'); }
+      if (sceneT >= 2.4) showCard(1);
+    } else if (scene === 'card') {
+      if (sceneT > 3.4) beginReel();
+    } else if (scene === 'play') {
+      play.update(dt);
+      G.clock.left -= dt;
+      const c = G.clock;
+      if (c.facades.length && REEL_SECONDS - c.left >= c.facades[0]) { c.facades.shift(); G.world.wantFacade = true; }
+      if (G.chase.nabT() > 1.8) { nabbed = true; go('iris'); return; }
+      // Let a trick in progress finish before the reel runs out.
+      if (G.clock.left <= 0 && (play.settled() || G.clock.left < -3)) {
+        play.bank();
+        if (G.clock.reel === 1) showCard(2);
+        else go('iris');
+      }
+    } else if (scene === 'iris') {
+      if (sceneT > 1.7) finish();
+    }
+  }
+
+  // ---- Drawing helpers
+  function decoCard(x, y, w, h) {
+    ctx.fillStyle = 'rgba(23,19,13,0.94)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = G.PAPER; ctx.lineWidth = 1.6;
+    ctx.strokeRect(x + 7, y + 7, w - 14, h - 14);
+    ctx.lineWidth = 0.7;
+    ctx.strokeRect(x + 11, y + 11, w - 22, h - 22);
+    // Art-deco fans in the corners and diamonds on the long edges.
+    [[x + 11, y + 11, 0], [x + w - 11, y + 11, 1], [x + w - 11, y + h - 11, 2], [x + 11, y + h - 11, 3]].forEach(([cx, cy, k]) => {
+      for (let r = 6; r <= 18; r += 6) {
+        ctx.beginPath(); ctx.arc(cx, cy, r, k * Math.PI / 2, (k + 1) * Math.PI / 2); ctx.stroke();
+      }
+    });
+    ctx.fillStyle = G.PAPER;
+    [[x + w / 2, y + 9], [x + w / 2, y + h - 9]].forEach(([cx, cy]) => {
+      ctx.beginPath(); ctx.moveTo(cx, cy - 5); ctx.lineTo(cx + 7, cy); ctx.lineTo(cx, cy + 5); ctx.lineTo(cx - 7, cy); ctx.closePath(); ctx.fill();
+    });
+  }
+  function divider(cx, y, half) {
+    ctx.strokeStyle = G.PAPER; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(cx - half, y); ctx.lineTo(cx - 8, y); ctx.moveTo(cx + 8, y); ctx.lineTo(cx + half, y); ctx.stroke();
+    ctx.fillStyle = G.PAPER;
+    ctx.beginPath(); ctx.arc(cx, y, 2.5, 0, 7); ctx.fill();
+  }
+  function text(str, x, y, font, color, maxW) {
+    ctx.font = font; ctx.fillStyle = color || G.PAPER;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(str, x, y, maxW);
+  }
+  const blink = (t) => (Math.floor(t * 2.2) % 2 === 0);
+
+  function iris(cx, cy, r) {
+    ctx.fillStyle = '#0b0a08';
+    ctx.beginPath();
+    ctx.rect(-10, -10, W() + 20, H + 20);
+    ctx.arc(cx, cy, Math.max(0.01, r), 0, Math.PI * 2, true);
+    ctx.fill();
+  }
+
+  function drawMute() {
+    const r = muteRect();
+    ctx.fillStyle = 'rgba(23,19,13,0.8)';
+    G.roundRect(r.x, r.y, r.w, r.h, 4); ctx.fill();
+    const x = r.x + 9, y = r.y + r.h / 2;
+    ctx.fillStyle = G.PAPER;
+    ctx.beginPath(); ctx.moveTo(x - 3, y - 3); ctx.lineTo(x, y - 3); ctx.lineTo(x + 5, y - 8); ctx.lineTo(x + 5, y + 8); ctx.lineTo(x, y + 3); ctx.lineTo(x - 3, y + 3); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = G.PAPER; ctx.lineWidth = 1.5;
+    if (G.audio.muted) {
+      ctx.beginPath(); ctx.moveTo(x + 9, y - 4); ctx.lineTo(x + 16, y + 4); ctx.moveTo(x + 16, y - 4); ctx.lineTo(x + 9, y + 4); ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(x + 6, y, 5, -0.8, 0.8); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x + 6, y, 9, -0.8, 0.8); ctx.stroke();
+    }
+  }
+
+  // ---- Scenes
+  function drawTitle(t) {
+    const w = W();
+    G.drawBackground(titleCam);
+    G.drawHero(G.hero, w * 0.3, t);
+    G.drawForeground(titleCam);
+    ctx.fillStyle = 'rgba(11,10,8,0.3)'; ctx.fillRect(0, 0, w, H);
+
+    const cw = Math.min(w - 50, 470), ch = 236, x = w / 2 - cw / 2, y = 16;
+    decoCard(x, y, cw, ch);
+    text('TWO REEL', w / 2, y + 66, '34px ' + G.TITLE_FONT);
+    text('TRICKY', w / 2, y + 118, '54px ' + G.TITLE_FONT);
+    divider(w / 2, y + 136, Math.min(150, cw / 2 - 30));
+    text('A Photoplay in Two Reels', w / 2, y + 160, '15px ' + G.BODY_FONT);
+    text('featuring Our Hero, His Hat, and a Plank on Wheels', w / 2, y + 180, '12px ' + G.BODY_FONT, G.LIGHT, cw - 40);
+    if (blink(t)) text('TAP TO ROLL FILM', w / 2, y + 210, '15px ' + G.BODY_FONT);
+    if (best > 0) {
+      ctx.fillStyle = 'rgba(23,19,13,0.85)';
+      G.roundRect(w / 2 - 80, H - 40, 160, 26, 4); ctx.fill();
+      text('BEST SCORE  ' + G.fmt(best), w / 2, H - 22, G.NUM_FONT.replace('{s}', 13));
+    }
+  }
+
+  function drawLeader() {
+    const w = W(), cx = w / 2, cy = H / 2;
+    const n = Math.max(1, 3 - Math.floor(sceneT / 0.8)), p = (sceneT % 0.8) / 0.8;
+    ctx.fillStyle = '#bfb59c'; ctx.fillRect(0, 0, w, H);
+    ctx.fillStyle = '#8c836c';
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, w, -Math.PI / 2, -Math.PI / 2 + p * Math.PI * 2); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = G.INK; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+    ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, 120, 0, 7); ctx.stroke();
+    ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, 104, 0, 7); ctx.stroke();
+    ctx.font = G.NUM_FONT.replace('{s}', 130); ctx.fillStyle = G.INK;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(n), cx, cy + 4);
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  function drawCard() {
+    const w = W(), lines = CARDS[reel];
+    ctx.fillStyle = '#0b0a08'; ctx.fillRect(0, 0, w, H);
+    decoCard(16, 16, w - 32, H - 32);
+    text(lines[0], w / 2, H / 2 - 34, '46px ' + G.TITLE_FONT);
+    divider(w / 2, H / 2 - 12, 110);
+    text(lines[1], w / 2, H / 2 + 24, '21px ' + G.BODY_FONT);
+    text(lines[2], w / 2, H / 2 + 50, '21px ' + G.BODY_FONT);
+    if (sceneT > 0.6) text('tap to continue', w / 2, H - 34, '12px ' + G.BODY_FONT, G.MID);
+  }
+
+  function drawEnd(t) {
+    const w = W(), s = G.getScore();
+    ctx.fillStyle = '#0b0a08'; ctx.fillRect(0, 0, w, H);
+    decoCard(16, 16, w - 32, H - 32);
+    text(nabbed ? 'NABBED!' : 'THE END', w / 2, 96, '54px ' + G.TITLE_FONT);
+    if (nabbed) text('Collared by the constabulary.', w / 2, 124, '14px ' + G.BODY_FONT, G.LIGHT);
+    else divider(w / 2, 118, 120);
+    text('FINAL SCORE', w / 2, 150, '14px ' + G.BODY_FONT, G.LIGHT);
+    text(G.fmt(s), w / 2, 190, G.NUM_FONT.replace('{s}', 38));
+    if (newBest && s > 0) { if (blink(t)) text('A NEW RECORD!', w / 2, 218, '17px ' + G.BODY_FONT); }
+    else text('BEST  ' + G.fmt(best), w / 2, 218, G.NUM_FONT.replace('{s}', 14), G.LIGHT);
+    text('Biggest combo  ' + G.fmt(G.stats.bestCombo) + '     ·     Pratfalls  ' + G.stats.bails,
+      w / 2, 252, G.NUM_FONT.replace('{s}', 13), G.LIGHT, w - 80);
+    if (sceneT > 1.2 && blink(t)) text('TAP TO ROLL IT AGAIN', w / 2, H - 46, '16px ' + G.BODY_FONT);
+  }
+
+  function render(t, dt) {
+    G.beginFrame(t);
+    if (scene === 'title') drawTitle(t);
+    else if (scene === 'leader') drawLeader();
+    else if (scene === 'card') drawCard();
+    else if (scene === 'end') drawEnd(t);
+    else {
+      const hx = play.draw(t, scene === 'play'), hy = G.hero.y - 40;
+      if (scene === 'play' && sceneT < 0.9) iris(hx, hy, Math.pow(sceneT / 0.9, 2) * W());
+      if (scene === 'iris') {
+        iris(hx, hy, Math.pow(Math.max(0, 1 - sceneT / 1.1), 2) * W());
+        if (sceneT > 1.1) text(nabbed ? 'NABBED!' : 'THE END', W() / 2, H / 2 + 14, '40px ' + G.TITLE_FONT, G.PAPER);
+      }
+    }
+    if (scene === 'title' || scene === 'play') drawMute();
+    G.endFrame(t, dt);
+  }
+
+  // If anything ever breaks mid-picture, say so and offer a fresh reload instead of freezing.
+  function jammed(err) {
+    const card = document.getElementById('jammed');
+    card.querySelector('small').textContent = String(err && err.message || err);
+    card.hidden = false;
+    card.addEventListener('pointerup', () => { location.href = location.pathname + '?r=' + Date.now(); });
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(Math.max((now - last) / 1000, 0), 1 / 30);
+    last = now;
+    try {
+      update(dt);
+      render(now / 1000, dt);
+    } catch (err) {
+      jammed(err);
+      return;
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  G.flow = { get scene() { return scene; }, skipTo(name) { if (name === 'end') { finish(); } } };
+})();
+
+</script>
 </body>
 </html>

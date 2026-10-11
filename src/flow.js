@@ -233,12 +233,25 @@
     G.endFrame(t, dt);
   }
 
+  // If anything ever breaks mid-picture, say so and offer a fresh reload instead of freezing.
+  function jammed(err) {
+    const card = document.getElementById('jammed');
+    card.querySelector('small').textContent = String(err && err.message || err);
+    card.hidden = false;
+    card.addEventListener('pointerup', () => { location.href = location.pathname + '?r=' + Date.now(); });
+  }
+
   let last = performance.now();
   function frame(now) {
-    const dt = Math.min((now - last) / 1000, 1 / 30);
+    const dt = Math.min(Math.max((now - last) / 1000, 0), 1 / 30);
     last = now;
-    update(dt);
-    render(now / 1000, dt);
+    try {
+      update(dt);
+      render(now / 1000, dt);
+    } catch (err) {
+      jammed(err);
+      return;
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
