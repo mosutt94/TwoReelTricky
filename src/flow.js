@@ -71,6 +71,7 @@
     sceneT += dt;
     if (scene === 'title') {
       titleCam += dt * 70;
+      G.updateScenery(dt, titleCam, sceneT);
     } else if (scene === 'leader') {
       const n = 3 - Math.floor(sceneT / 0.8);
       if (n !== lastCount && n > 0) { lastCount = n; G.sfx('tick'); }
@@ -154,7 +155,7 @@
   // ---- Scenes
   function drawTitle(t) {
     const w = W();
-    G.drawBackground(titleCam);
+    G.drawBackground(titleCam, t);
     G.drawForeground(titleCam);
     ctx.fillStyle = 'rgba(11,10,8,0.3)'; ctx.fillRect(0, 0, w, H);
 

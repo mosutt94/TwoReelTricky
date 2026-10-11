@@ -531,6 +531,7 @@
       h.x += h.speed * dt;
     }
     G.updateWorld(h.x - G.viewW * 0.3);
+    G.updateScenery(dt, h.x - G.viewW * 0.3, time);
 
     if ((h.state === 'ground' || h.state === 'manual' || h.state === 'air') && pipeEntry()) {
       // dropped into the half-pipe this frame
@@ -623,7 +624,7 @@
     const ease = camBlend * camBlend * (3 - 2 * camBlend);
     const camX = camPipe ? G.lerp(follow, camPipe.x + camPipe.w / 2 - G.viewW / 2, ease) : follow;
     const heroSX = hero.x - camX;
-    G.drawBackground(camX);
+    G.drawBackground(camX, t);
     G.drawObstacles(camX, t);
     G.drawParticles(camX);
     G.chase.draw(camX, heroSX, t);
