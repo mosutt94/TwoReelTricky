@@ -28,7 +28,7 @@
   function showCard(r) { reel = r; go('card'); }
   function beginReel() {
     G.clock = { reel, left: REEL_SECONDS, facades: FACADES[reel].slice() };
-    G.audio.setTempo(reel === 1 ? 100 : 118);
+    G.audio.setTempo(reel === 1 ? 100 : 112);
     G.audio.setClatter(true);
     go('play');
   }
