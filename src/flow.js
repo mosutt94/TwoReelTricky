@@ -170,6 +170,7 @@
     text('featuring Our Hero, His Hat, and a Plank on Wheels', x + cw / 2, y + 180, '12px ' + G.BODY_FONT, G.LIGHT, cw - 40);
     if (blink(t)) text('TAP TO ROLL FILM', x + cw / 2, y + 210, '15px ' + G.BODY_FONT);
     G.hero.push = (t % 2.6) < 0.6 ? (t % 2.6) / 0.6 : -1;
+    G.drawShadow(w * 0.3, G.GROUND, 0);
     G.drawHero(G.hero, w * 0.3, t);
     ctx.textAlign = 'left'; ctx.font = '10px ' + G.BODY_FONT; ctx.fillStyle = 'rgba(239,230,208,0.6)';
     ctx.fillText('PRINT No. ' + (window.TRT_PRINT || '?'), 14, H - 12);

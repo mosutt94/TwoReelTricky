@@ -89,7 +89,7 @@
     ctx.font = '14px ' + G.BODY_FONT;
     ui.popups.forEach((p, i) => {
       ctx.globalAlpha = 1 - p.t / 0.9;
-      outlined(p.text, heroSX + 10, Math.min(h.y, GR) - 120 - p.t * 40 - (ui.popups.length - 1 - i) * 16);
+      outlined(p.text, heroSX + 10, Math.max(78, Math.min(h.y, GR) - 120 - p.t * 40 - (ui.popups.length - 1 - i) * 16));
     });
     ctx.globalAlpha = 1;
 

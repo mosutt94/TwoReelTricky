@@ -628,6 +628,10 @@
     G.drawParticles(camX);
     G.chase.draw(camX, heroSX, t);
     if (looseBoard.active) G.drawLooseBoard(looseBoard.x - camX, looseBoard.y, looseBoard.rot);
+    if (hero.state !== 'bail' && hero.state !== 'pipe') {
+      const f = hero.state === 'air' ? floorAt(hero.x, hero.y).floor : Math.max(hero.y, floorAt(hero.x, hero.y).floor);
+      G.drawShadow(heroSX, f, f - hero.y);
+    }
     G.drawHero(hero, heroSX, t);
     if (looseHat.active) G.drawHat(looseHat.x - camX, looseHat.y, looseHat.rot);
     G.chase.drawOver(camX, heroSX, t);
