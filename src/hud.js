@@ -1,4 +1,5 @@
-// On-screen cards: score, combo, reel clock, trick names, banners, the balance needle,
+// On-screen cards: score, combo, reel clock, trick names, banners, the manual balance needle,
+// the air gauge on the ramp,
 // first-run tips, and "hold to grind" labels over the first few rails.
 (function () {
   const ctx = G.ctx, GR = G.GROUND, ui = G.ui;
@@ -6,8 +7,8 @@
     'HOLD to crouch  ·  LET GO to ollie',
     'SWIPE in the air to flip  ·  swipe again for a double',
     'Keep HOLDING as you land on a rail to grind  ·  LET GO to pop',
-    'On a rail, FLICK to pop off into a trick  ·  slide slowly to balance',
-    'Land while HOLDING to manual  ·  it keeps the combo going',
+    'On a rail, FLICK to pop off into a trick',
+    'Land while HOLDING to manual  ·  slide your finger to keep the needle up',
     'Swipe UP for the Hat Trick  ·  swipe up and hold to grab',
   ];
 
@@ -22,7 +23,7 @@
     ctx.fillStyle = G.PAPER; ctx.fillText(text, x, y);
   }
 
-  // A little gauge over his head: keep the needle out of the dark ends.
+  // The balance gauge over his head in a manual: keep the needle out of the dark ends.
   function balanceMeter(x, y, bal) {
     const r = 24, span = Math.PI / 3;
     ctx.lineCap = 'butt';
@@ -36,7 +37,14 @@
     ctx.strokeStyle = G.INK; ctx.lineWidth = 2; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * (r + 5), y + Math.sin(a) * (r + 5)); ctx.stroke();
     ctx.fillStyle = G.INK; ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill();
+    ctx.textAlign = 'center'; ctx.font = '10px ' + G.BODY_FONT;
+    outlined('BALANCE', x, y - r - 9);
+    if (Math.abs(bal) > 0.22) {                                 // which way to slide
+      ctx.font = '11px ' + G.BODY_FONT;
+      outlined(bal > 0 ? 'slide \u25B6' : '\u25C0 slide', x + (bal > 0 ? 34 : -34), y + 6);
+    }
   }
+  let manualHints = 0, wasManual = false, hint = null;
 
   G.drawHUD = function (heroSX, camX, t) {
     const W = G.viewW, h = ui.hero, combo = ui.combo, time = ui.time;
@@ -83,7 +91,13 @@
       ctx.fillText(Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'), W - 62, 49);
     }
 
-    if (h.state === 'grind' || h.state === 'manual') balanceMeter(heroSX + 4, h.y - 96, h.bal);
+    const manual = h.state === 'manual';
+    if (manual) balanceMeter(heroSX + 4, h.y + G.camY - 96, h.bal);
+    if (manual && !wasManual && manualHints < 2) {              // the first couple of times, spell it out
+      manualHints++;
+      hint = { text: 'BALANCE: keep the needle up by sliding your finger toward it', t: 0 };
+    }
+    wasManual = manual;
     if (h.state === 'pipe') {                                   // how much air he has pumped up
       const k = G.clamp((h.pipeH - G.PIPE.AIR_MIN) / (G.PIPE.AIR_MAX - G.PIPE.AIR_MIN), 0, 1);
       plate(12, 62, 132, 22);
@@ -98,7 +112,7 @@
     ctx.font = '14px ' + G.BODY_FONT;
     ui.popups.forEach((p, i) => {
       ctx.globalAlpha = 1 - p.t / 0.9;
-      outlined(p.text, heroSX + 10, Math.max(78, Math.min(h.y + G.camY, GR) - 120 - p.t * 40 - (ui.popups.length - 1 - i) * 16));
+      outlined(p.text, heroSX + 10, Math.max(78, Math.min(h.y + G.camY, GR) - (manual ? 152 : 120) - p.t * 40 - (ui.popups.length - 1 - i) * 16));
     });
     ctx.globalAlpha = 1;
 
@@ -119,8 +133,15 @@
       ctx.restore();
     }
 
-    // How-to tips cycle through during the opening of the first reel.
-    if (time < 4.5 * TIPS.length && G.clock && G.clock.reel === 1) {
+    // A timely hint takes the caption bar; otherwise how-to tips cycle through the opening of reel one.
+    if (hint && (hint.t += 1 / 60) < 3.2) {
+      ctx.globalAlpha = Math.min(1, hint.t * 4, (3.2 - hint.t) * 3);
+      const w = Math.min(W - 24, 470);
+      plate(W / 2 - w / 2, G.VIEW_H - 44, w, 32);
+      ctx.fillStyle = G.PAPER; ctx.font = '13px ' + G.BODY_FONT; ctx.textAlign = 'center';
+      ctx.fillText(hint.text, W / 2, G.VIEW_H - 23, w - 20);
+      ctx.globalAlpha = 1;
+    } else if (time < 4.5 * TIPS.length && G.clock && G.clock.reel === 1) {
       const i = Math.floor(time / 4.5), k = time - i * 4.5;
       ctx.globalAlpha = Math.min(1, k * 4, (4.5 - k) * 4);
       const w = Math.min(W - 24, 470);

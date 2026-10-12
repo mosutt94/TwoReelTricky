@@ -1,7 +1,8 @@
 // Skating rules. Hold to crouch, let go to ollie. Keep holding as you come down on a rail or
 // ledge to grind it, and let go to pop off. Swipe in the air to flip (swipe the same way again
 // for a double or triple), swipe up for the Hat Trick, or swipe up and hold to grab. Land while
-// holding to manual. Grinds and manuals need balance: slide the finger to keep the needle up.
+// holding to manual, which keeps the combo alive between obstacles but needs balancing: the
+// needle drifts faster the longer you ride and the more tricks are stacked in the combo.
 (function () {
   const GR = G.GROUND, GRAVITY = 1700;
   const input = G.input;
@@ -33,10 +34,10 @@
       x: 0, y: GR, vy: 0, state: 'ground', speed: 120, crouch: 0.1, tilt: 0, lean: 2,
       support: null, onRamp: null, grind: null, ghost: false,
       flip: null, queued: null, hat: null, grab: null, grabPending: -1,
-      bal: 0, balV: 0, balT: 0,
       hatOn: true, hatLift: 0, hatSpin: 0, board: { flip: 0, spin: 0, dy: 0 },
       arms: 'relaxed', bailT: 0, bailRot: 0, floor: GR, floorObj: null,
       pipe: null, pAir: false, pumping: false, popped: false, pipeH: 60, faceScale: 1, airPress: false,
+      bal: 0, balV: 0, balT: 0,
     });
     camPipe = null; camBlend = 0; camY = 0; G.camY = 0;
     looseBoard.active = looseHat.active = false;
@@ -207,18 +208,20 @@
     G.emit('dust', hero.x - 8, hero.y, 3, 30);
     G.sfx('ollie');
   }
+  // Manual balance. Slide the finger toward the needle to catch it. It tips faster with time and
+  // with the size of the combo riding on it, up to a cap so it never becomes impossible.
   function startBalance() {
     hero.bal = G.rand(-0.1, 0.1);
     hero.balV = (Math.random() < 0.5 ? -1 : 1) * 0.25;
     hero.balT = 0;
     input.anchor = input.cx;
   }
-  // Grinds and manuals tip over unless the finger leans the other way; longer is harder.
   function balance(dt) {
     hero.balT += dt;
+    const stack = Math.min(8, combo.mult);
     const ctrl = G.balanceInput();
-    const tip = hero.bal * (1.2 + hero.balT * 0.5);
-    const wobble = Math.sin(time * 3.1 + hero.x * 0.013) * 0.25 * (0.5 + hero.balT * 0.15);
+    const tip = hero.bal * (1.1 + hero.balT * 0.45 + stack * 0.28);
+    const wobble = Math.sin(time * 3.1 + hero.x * 0.013) * 0.25 * (0.5 + hero.balT * 0.15 + stack * 0.1);
     hero.balV += (tip + wobble - ctrl * 3.2) * dt;
     hero.balV *= Math.pow(0.6, dt);
     hero.bal += hero.balV * dt;
@@ -228,7 +231,6 @@
     clearAir();
     hero.state = 'grind'; hero.grind = o; hero.support = null;
     hero.y = o.top; hero.vy = 0;
-    startBalance();
     addToCombo(GRINDS[o.kind] || 'Grind', 100);
     G.sfx('grind');
   }
@@ -298,12 +300,12 @@
     hero.grabPending = -1;
   };
   // A quick flick on the ground, a rail or a manual pops straight into the trick; in the air it
-  // starts one. (Slow sideways slides on a rail are balance, and never arrive here as flicks.)
+  // starts one.
   // A grab needs a fresh press in the air, so a finger held over from a grind or a pump never
   // turns a hat trick into one by accident.
   G.handlers.swipe = (dir, fromKey) => {
     const riding = hero.state === 'grind' || hero.state === 'manual';
-    if (riding && fromKey && (dir === 'left' || dir === 'right')) return;   // arrow keys steer balance
+    if (hero.state === 'manual' && fromKey && (dir === 'left' || dir === 'right')) return;   // arrow keys steer balance
     if (hero.state === 'ground' || riding) { pop(); hero.vy -= 60; }
     if (hero.state !== 'air' && !(hero.state === 'pipe' && hero.pAir)) return;
     if (dir === 'up') { startHat(); if (!hero.grab && hero.airPress) hero.grabPending = 0; }
@@ -562,8 +564,7 @@
       h.y = o.top;
       combo.base += 150 * dt;
       if (o.kind !== 'line' && Math.random() < 0.7) G.emit('spark', h.x + G.rand(-14, 10), o.top, 1, 140);
-      if (!balance(dt)) bail(o, 'Lost his balance.');
-      else if (h.x > o.x + o.w) { h.state = 'air'; h.vy = -60; h.grind = null; }   // ran off the end
+      if (h.x > o.x + o.w) { h.state = 'air'; h.vy = -60; h.grind = null; }   // ran off the end
     } else {
       updateBail(dt);
     }
@@ -580,7 +581,7 @@
       arms = h.grab ? 'grab' : 'flail';
       tilt = G.clamp(h.vy / 4000, -0.12, 0.18);
     } else if (h.state === 'grind' || h.state === 'manual') {
-      crouch = 0.35; arms = 'out'; tilt = h.bal * 0.35;
+      crouch = 0.35; arms = 'out'; tilt = h.state === 'manual' ? h.bal * 0.35 : Math.sin(time * 9) * 0.03;
     } else if (h.state === 'pipe') {
       crouch = h.pumping ? 1 : h.popped ? 0.15 : 0.45; arms = 'relaxed';
     } else {
