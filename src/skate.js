@@ -4,15 +4,15 @@
 // holding to manual, which keeps the combo alive between obstacles but needs balancing: the
 // needle drifts faster the longer you ride and the more tricks are stacked in the combo.
 (function () {
-  const GR = G.GROUND, GRAVITY = 1700;
+  const GR = G.GROUND, GRAVITY = 1550;
   const input = G.input;
 
   const FLIPS = {
-    left: { names: ['Kickflip', 'Double Kickflip', 'Triple Kickflip'], pts: [100, 250, 500], kind: 'flip', sign: 1 },
-    right: { names: ['Heelflip', 'Double Heelflip', 'Triple Heelflip'], pts: [100, 250, 500], kind: 'flip', sign: -1 },
-    down: { names: ['Pop Shove-It', '360 Shove-It', '540 Shove-It'], pts: [120, 300, 600], kind: 'spin', sign: 1 },
+    left: { names: ['Kickflip', 'Double Kickflip', 'Triple Kickflip'], pts: [150, 350, 700], kind: 'flip', sign: 1 },
+    right: { names: ['Heelflip', 'Double Heelflip', 'Triple Heelflip'], pts: [150, 350, 700], kind: 'flip', sign: -1 },
+    down: { names: ['Pop Shove-It', '360 Shove-It', '540 Shove-It'], pts: [150, 350, 700], kind: 'spin', sign: 1 },
   };
-  const FIRST_SPIN = 0.28, EXTRA_SPIN = 0.22;
+  const FIRST_SPIN = 0.25, EXTRA_SPIN = 0.2;
   const GRINDS = {
     rail: '50-50 Grind', bench: 'Boardslide', ledge: '5-0 Grind', crate: 'Crate Slide',
     line: 'Tightrope Walk', pad: 'Curb Grind', dock: 'Dock Grind', trolley: 'Trolley Roof Grind',
@@ -125,8 +125,25 @@
     hero.flip = null; hero.queued = null; hero.grab = null; hero.grabPending = -1;
     resetBoard();
   }
+  // Seconds of air left before he comes down on whatever is under him.
+  function airLeft() {
+    let g = GRAVITY, land = streetY(hero.x);
+    if (hero.pipe) { g = 1450; land = GR - hero.pipe.R; }
+    else for (const o of list()) {
+      const k = kind(o);
+      if ((k.grind || k.flat) && hero.x >= o.x - 6 && hero.x <= o.x + o.w && o.top >= hero.y && o.top < land) land = o.top;
+    }
+    const h = Math.max(0, land - hero.y), vy = hero.vy;
+    return (-vy + Math.sqrt(vy * vy + 2 * g * h)) / g;
+  }
+  // A flick with too little air left to finish the rotation is waved off rather than punished.
   function startFlip(dir) {
     const def = FLIPS[dir], f = hero.flip;
+    const need = (f && f.dir === dir ? EXTRA_SPIN : FIRST_SPIN) - 0.1;
+    if (airLeft() < need) {
+      if (!popups.some((p) => p.text === 'Late!')) popups.push({ text: 'Late!', t: 0.2 });
+      return;
+    }
     if (f && f.dir === dir && f.spins < 3) {           // same flick again: one more rotation
       f.spins++;
       f.dur += EXTRA_SPIN;
@@ -136,7 +153,8 @@
     if (f) { hero.queued = dir; return; }
     hero.flip = { dir, kind: def.kind, sign: def.sign, spins: 1, t: 0, dur: FIRST_SPIN, idx: addToCombo(def.names[0], def.pts[0]) };
   }
-  // The Hat Trick is pure showmanship: it never costs him a fall. It scores when he catches it.
+  // The Hat Trick is pure showmanship: it never costs him a fall, so it is a flourish worth a
+  // little on its own and never a rung in the combo.
   function startHat() {
     if (hero.hat) return;
     hero.hat = { t: 0, dur: 0.6 };
@@ -152,8 +170,8 @@
     if (p < 1) return;
     hero.hat = null; hero.hatLift = hero.hatSpin = 0;
     G.emit('dust', hero.x + 8, hero.y - 84, 4, 40);
-    if (combo.mult) addToCombo('Hat Trick', 200);             // caught mid-combo: counts toward it
-    else { score += 200; popups.push({ text: 'Hat Trick  +200', t: 0 }); }
+    if (combo.mult) combo.base += 50; else score += 50;
+    popups.push({ text: 'Hat Trick  +50', t: 0 });
   }
   function startGrab() {
     hero.grab = { t: 0 };

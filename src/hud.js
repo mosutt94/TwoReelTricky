@@ -9,7 +9,7 @@
     'Keep HOLDING as you land on a rail to grind  ·  LET GO to pop',
     'On a rail, FLICK to pop off into a trick',
     'Land while HOLDING to manual  ·  slide your finger to keep the needle up',
-    'Swipe UP for the Hat Trick  ·  swipe up and hold to grab',
+    'Swipe UP to doff the hat for a little extra  ·  swipe up and hold to grab',
   ];
 
   function plate(x, y, w, h) {
